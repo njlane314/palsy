@@ -1,0 +1,35 @@
+services:
+  palsy:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PALSY_STATE_DIR: /var/lib/palsy
+      PALSY_POLICY_FILE: /app/config/policy.example.yaml
+      PALSY_UPSTREAM_PYPI: https://pypi.org
+      PALSY_REQUIRE_API_TOKEN: "true"
+      PALSY_API_TOKEN: ${PALSY_API_TOKEN:?Set PALSY_API_TOKEN before starting Palsy}
+      PALSY_LOG_LEVEL: ${PALSY_LOG_LEVEL:-INFO}
+    volumes:
+      - palsy-state:/var/lib/palsy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  palsy-state:

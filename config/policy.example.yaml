@@ -1,0 +1,25 @@
+name: pypi-default
+mode: enforce
+minimum_release_age_seconds:
+  default: 86400
+  dev: 0
+  ci: 3600
+  prod: 86400
+allow_pth_exec:
+  - setuptools
+  - pip
+allow_native_code:
+  - numpy
+  - scipy
+  - cryptography
+  - pillow
+  - torch
+  - tensorflow
+allow_import_network:
+  - certifi
+allow_hidden_runtime: []
+trusted_publishers: {}
+max_allowed_severity: medium
+review_on_severity: high
+permit_ttl_seconds: 604800
+require_sandbox_for_prod: true

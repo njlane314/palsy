@@ -1,0 +1,41 @@
+name: Install With Palsy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start Palsy
+        env:
+          PALSY_API_TOKEN: ${{ secrets.PALSY_API_TOKEN }}
+        run: |
+          docker compose up --build --detach
+          python - <<'PY'
+          import time
+          import urllib.request
+
+          for _ in range(60):
+              try:
+                  urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=2)
+                  break
+              except Exception:
+                  time.sleep(1)
+          else:
+              raise SystemExit("Palsy did not become healthy")
+          PY
+
+      - name: Install dependency through Palsy
+        env:
+          PALSY_URL: http://127.0.0.1:8080
+          PALSY_API_TOKEN: ${{ secrets.PALSY_API_TOKEN }}
+          PALSY_ENVIRONMENT: ci
+        run: |
+          python scripts/palsy-pip-install requests==2.32.3

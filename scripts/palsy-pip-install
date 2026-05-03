@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""pip install wrapper for Palsy.
+
+Usage:
+  PALSY_URL=http://localhost:8080 PALSY_API_TOKEN=dev-token scripts/palsy-pip-install requests==2.32.3
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or "==" not in sys.argv[1]:
+        print("usage: palsy-pip-install package==version [pip args...]", file=sys.stderr)
+        return 2
+    spec = sys.argv[1]
+    project, version = spec.split("==", 1)
+    base = os.environ.get("PALSY_URL", "http://localhost:8080").rstrip("/")
+    token = os.environ.get("PALSY_API_TOKEN")
+    environment = os.environ.get("PALSY_ENVIRONMENT", "ci")
+    payload = json.dumps({"project": project, "version": version, "environment": environment}).encode()
+    req = urllib.request.Request(
+        f"{base}/v1/artifacts/pypi/assess",
+        data=payload,
+        headers={"Content-Type": "application/json", **({"X-API-Token": token} if token else {})},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read())
+    except Exception as exc:
+        print(f"palsy: assessment failed: {exc}", file=sys.stderr)
+        return 1
+    decision = result["policy"]["decision"]
+    if decision != "allow":
+        print(f"palsy: blocked {spec}: {decision}", file=sys.stderr)
+        for reason in result["policy"].get("reasons", []):
+            print(f"  - {reason}", file=sys.stderr)
+        return 1
+    return subprocess.call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--index-url",
+            f"{base}/simple/",
+            *sys.argv[1:],
+        ]
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
