@@ -349,6 +349,16 @@ class LockfileDependencyResult(BaseModel):
     permit_id: str | None = None
     max_severity: Severity | None = None
     finding_count: int = 0
+    capabilities: ScanCapabilities | None = None
+    findings: list[Finding] = Field(default_factory=list)
+    top_level_modules: list[str] = Field(default_factory=list)
+    file_count: int = 0
+    total_uncompressed_size: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    resolved_url: str | None = None
+    published_at: datetime | None = None
+    media_type: str | None = None
+    mutable_reference: bool = False
 
 
 class LockfileAssessmentResponse(BaseModel):

@@ -330,6 +330,16 @@ class FirewallService:
                     permit_id=response.permit.id if response.permit else None,
                     max_severity=response.scan.max_severity,
                     finding_count=len(response.scan.findings),
+                    capabilities=response.scan.capabilities,
+                    findings=response.scan.findings,
+                    top_level_modules=response.scan.top_level_modules,
+                    file_count=response.scan.file_count,
+                    total_uncompressed_size=response.scan.total_uncompressed_size,
+                    metadata=response.scan.metadata,
+                    resolved_url=response.resolved.url,
+                    published_at=response.resolved.published_at,
+                    media_type=response.resolved.media_type,
+                    mutable_reference=response.resolved.mutable_reference,
                 )
             )
 

@@ -176,6 +176,16 @@ jobs:
 
 See [Palsy Gate](docs/PALSY_GATE.md) for the self-serve product path.
 
+Admission runs also produce an interface bundle:
+
+```text
+.palsy/admission.json
+.palsy/dependency-passport.html
+.palsy/summary.md
+```
+
+Use `palsy report .palsy/admission.json` to render reports again, `palsy console .palsy/admission.json` to inspect the result locally, and `palsy policy compose --preset ci-balanced --non-interactive` to generate an explained policy. See [Palsy Interface Layer](docs/PALSY_INTERFACE.md).
+
 For production sandboxing, set:
 
 ```bash

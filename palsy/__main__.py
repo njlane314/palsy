@@ -10,8 +10,17 @@ import urllib.request
 
 import uvicorn
 
+from .admission_report import load_admission_document
 from .admission_output import format_admission_summary
 from .gate import gate_command, init_command, verify_permit_command
+from .interface_outputs import emit_report_bundle, write_rendered_outputs
+from .policy_composer import (
+    compose_policy_interactive,
+    policy_explanation,
+    policy_from_preset,
+    write_policy,
+    write_policy_explanation,
+)
 from .scanner import StaticArtifactScanner
 from .settings import get_settings
 from .utils import sha256_file
@@ -68,7 +77,8 @@ def main() -> None:
     gate.add_argument("--sandbox", action="store_true")
     gate.add_argument("--force-rescan", action="store_true")
     gate.add_argument("--json", action="store_true", dest="json_output")
-    gate.add_argument("--out", type=Path, default=None, help="Write raw admission JSON")
+    gate.add_argument("--out", type=Path, default=None, help="Write canonical admission JSON")
+    _add_report_args(gate, include_out=False)
     gate.add_argument(
         "--permit-out",
         type=Path,
@@ -99,6 +109,25 @@ def main() -> None:
     admit_lockfile.add_argument("--force-rescan", action="store_true")
     admit_lockfile.add_argument("--timeout", type=int, default=300)
     admit_lockfile.add_argument("--json", action="store_true", dest="json_output")
+    _add_report_args(admit_lockfile)
+
+    report = sub.add_parser("report", help="Render an admission.json file into user-facing outputs")
+    report.add_argument("admission", type=Path, help="admission.json or raw lockfile assessment JSON")
+    report.add_argument("--html", type=Path, default=Path(".palsy/dependency-passport.html"))
+    report.add_argument("--summary", type=Path, default=Path(".palsy/summary.md"))
+
+    console = sub.add_parser("console", help="Open the local Palsy Console TUI")
+    console.add_argument("admission", type=Path, nargs="?", default=Path(".palsy/admission.json"))
+
+    policy = sub.add_parser("policy", help="Policy tools")
+    policy_sub = policy.add_subparsers(dest="policy_command")
+    policy_sub.required = True
+    compose = policy_sub.add_parser("compose", help="Generate a policy through the Policy Composer")
+    compose.add_argument("--out", type=Path, default=Path(".palsy/policy.yaml"))
+    compose.add_argument("--preset", choices=["dev-relaxed", "ci-balanced", "prod-strict"], default=None)
+    compose.add_argument("--environment", choices=["dev", "ci", "prod"], default="ci")
+    compose.add_argument("--force", action="store_true")
+    compose.add_argument("--non-interactive", action="store_true")
 
     args = parser.parse_args()
     if args.command in {None, "serve"}:
@@ -116,6 +145,24 @@ def main() -> None:
         raise SystemExit(verify_permit_command(args))
     elif args.command == "admit-lockfile":
         raise SystemExit(admit_lockfile_command(args))
+    elif args.command == "report":
+        raise SystemExit(report_command(args))
+    elif args.command == "console":
+        from .console import run_console
+
+        raise SystemExit(run_console(args.admission))
+    elif args.command == "policy" and args.policy_command == "compose":
+        raise SystemExit(policy_compose_command(args))
+
+
+def _add_report_args(parser: argparse.ArgumentParser, *, include_out: bool = True) -> None:
+    parser.add_argument("--report-dir", type=Path, default=Path(".palsy"))
+    if include_out:
+        parser.add_argument("--out", type=Path, default=None, help="Write canonical admission JSON")
+    parser.add_argument("--html", type=Path, default=None, help="Write the static Palsy Passport report")
+    parser.add_argument("--summary", type=Path, default=None, help="Write a Markdown summary")
+    parser.add_argument("--baseline", type=Path, default=None, help="Previous admission JSON for Dependency Diff")
+    parser.add_argument("--no-report", action="store_true", help="Do not write admission.json or reports")
 
 
 def admit_lockfile_command(args: argparse.Namespace) -> int:
@@ -151,11 +198,54 @@ def admit_lockfile_command(args: argparse.Namespace) -> int:
         print(f"lockfile admission request failed: {exc}", file=sys.stderr)
         return 2
 
+    report_paths = emit_report_bundle(
+        result,
+        report_dir=getattr(args, "report_dir", None),
+        out=getattr(args, "out", None),
+        html=getattr(args, "html", None),
+        summary=getattr(args, "summary", None),
+        baseline=getattr(args, "baseline", None),
+        no_report=getattr(args, "no_report", False),
+    )
     if args.json_output:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print(format_admission_summary(result))
+        if report_paths:
+            print("\nPalsy interface outputs:")
+            for label, path in report_paths.items():
+                print(f"- {label}: {path}")
     return 0 if result.get("decision") == "allow" else 1
+
+
+def report_command(args: argparse.Namespace) -> int:
+    document = load_admission_document(args.admission)
+    write_rendered_outputs(document, args.html, args.summary)
+    print(f"HTML report: {args.html}")
+    print(f"Markdown summary: {args.summary}")
+    return 0
+
+
+def policy_compose_command(args: argparse.Namespace) -> int:
+    try:
+        if args.non_interactive:
+            policy = policy_from_preset(args.preset or "ci-balanced", environment=args.environment)
+            write_policy(args.out, policy, force=args.force)
+            write_policy_explanation(args.out.with_suffix(".explained.md"), policy)
+        else:
+            policy = compose_policy_interactive(
+                preset=args.preset,
+                environment=args.environment,
+                out=args.out,
+                force=args.force,
+            )
+    except FileExistsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"Policy written: {args.out}")
+    print(f"Explanation written: {args.out.with_suffix('.explained.md')}")
+    print(policy_explanation(policy))
+    return 0
 
 
 if __name__ == "__main__":

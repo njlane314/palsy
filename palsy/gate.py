@@ -9,6 +9,7 @@ from textwrap import dedent
 from typing import Any
 
 from .admission_output import format_admission_summary
+from .interface_outputs import emit_report_bundle, safe_lockfile_stem
 from .models import BuildPermit, Decision, Environment, LockfileAssessmentRequest
 from .permits import verify_build_permit_document
 from .service import FirewallService
@@ -154,8 +155,38 @@ def gate_command(args: argparse.Namespace) -> int:
     payloads = [response.model_dump(mode="json") for response in responses]
     payload: dict[str, Any] | list[dict[str, Any]] = payloads[0] if len(payloads) == 1 else payloads
 
-    if args.out:
-        _write_json(args.out, payload)
+    report_paths: list[dict[str, Path]] = []
+    if not args.no_report:
+        if len(payloads) > 1 and (args.out or args.html or args.summary):
+            print(
+                "explicit --out, --html, and --summary support one lockfile; use --report-dir for multiple lockfiles",
+                file=sys.stderr,
+            )
+            return 2
+        for result in payloads:
+            if len(payloads) == 1:
+                paths = emit_report_bundle(
+                    result,
+                    report_dir=args.report_dir,
+                    out=args.out,
+                    html=args.html,
+                    summary=args.summary,
+                    baseline=args.baseline,
+                    no_report=args.no_report,
+                )
+            else:
+                stem = safe_lockfile_stem(str(result.get("lockfile_name") or "lockfile"))
+                paths = emit_report_bundle(
+                    result,
+                    report_dir=args.report_dir,
+                    out=args.report_dir / f"{stem}.admission.json",
+                    html=args.report_dir / f"{stem}.dependency-passport.html",
+                    summary=args.report_dir / f"{stem}.summary.md",
+                    baseline=args.baseline,
+                    no_report=args.no_report,
+                )
+            if paths:
+                report_paths.append(paths)
 
     if args.json_output:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -164,6 +195,10 @@ def gate_command(args: argparse.Namespace) -> int:
             if index:
                 print("\n" + "-" * 72 + "\n")
             print(format_admission_summary(result))
+            if index < len(report_paths):
+                print("\nPalsy interface outputs:")
+                for label, path in report_paths[index].items():
+                    print(f"- {label}: {path}")
 
     for response in responses:
         if response.permit:
