@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+
+URL = os.environ.get("PALSY_URL", "http://127.0.0.1:8080").rstrip("/")
+TOKEN = os.environ.get("PALSY_API_TOKEN")
+
+
+def split_npm_spec(spec: str) -> tuple[str, str]:
+    if spec.startswith("@"):
+        at = spec.rfind("@")
+        if at <= 0:
+            raise ValueError("scoped package requires @scope/name@version")
+        return spec[:at], spec[at + 1:]
+    if "@" not in spec:
+        raise ValueError("npm package requires name@version")
+    name, version = spec.rsplit("@", 1)
+    return name, version
+
+
+def main() -> int:
+    if not sys.argv[1:]:
+        print("usage: palsy-npm-install PACKAGE@VERSION [npm args...]", file=sys.stderr)
+        return 2
+    try:
+        name, version = split_npm_spec(sys.argv[1])
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    payload = {"coordinate": {"ecosystem": "npm", "name": name, "version": version}, "environment": os.environ.get("PALSY_ENVIRONMENT", "ci")}
+    req = urllib.request.Request(f"{URL}/v1/artifacts/assess", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+    if TOKEN:
+        req.add_header("X-API-Token", TOKEN)
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read())
+    decision = result["policy"]["decision"]
+    if decision != "allow":
+        print(json.dumps(result["policy"], indent=2), file=sys.stderr)
+        return 1
+    cmd = ["npm", "install", "--registry", f"{URL}/npm", *sys.argv[1:]]
+    return subprocess.call(cmd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

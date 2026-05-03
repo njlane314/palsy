@@ -5,11 +5,18 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class Ecosystem(str, Enum):
+    pypi = "pypi"
+    npm = "npm"
+    oci = "oci"
+    generic = "generic"
 
 
 class Severity(str, Enum):
@@ -50,17 +57,44 @@ class ArtifactStatus(str, Enum):
 
 
 class ArtifactCoordinate(BaseModel):
-    ecosystem: Literal["pypi"] = "pypi"
-    project: str = Field(min_length=1, max_length=256)
-    version: str = Field(min_length=1, max_length=256)
+    ecosystem: Ecosystem = Ecosystem.pypi
+    project: str | None = Field(default=None, min_length=1, max_length=512)
+    name: str | None = Field(default=None, min_length=1, max_length=512)
+    version: str | None = Field(default=None, max_length=512)
     filename: str | None = Field(default=None, max_length=512)
+    url: str | None = Field(default=None, max_length=4096)
+    expected_digest: str | None = Field(default=None, max_length=256)
+    platform: str | None = Field(default=None, max_length=128)
 
-    @field_validator("project")
+    @field_validator("project", "name")
     @classmethod
-    def normalize_project(cls, value: str) -> str:
-        # PEP 503 normalization is hyphen-based and lowercase. We keep the user's
-        # display value elsewhere; this coordinate is for stable lookup.
-        return value.strip().replace("_", "-").lower()
+    def clean_name(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "ArtifactCoordinate":
+        if not self.name and self.project:
+            self.name = self.project
+        if not self.project and self.name:
+            self.project = self.name
+        if self.ecosystem == Ecosystem.pypi:
+            if self.project:
+                self.project = self.project.strip().replace("_", "-").lower()
+                self.name = self.project
+            if not self.version:
+                raise ValueError("PyPI coordinates require version")
+        elif self.ecosystem in {Ecosystem.npm, Ecosystem.oci}:
+            if not self.name:
+                raise ValueError(f"{self.ecosystem.value} coordinates require name")
+            if not self.version:
+                raise ValueError(f"{self.ecosystem.value} coordinates require version/ref")
+        elif self.ecosystem == Ecosystem.generic:
+            if not self.url and not (self.name and self.name.startswith(("http://", "https://"))):
+                raise ValueError("generic coordinates require url or a URL-valued name")
+            if not self.name:
+                self.name = self.url
+                self.project = self.url
+        return self
 
 
 class PyPIFile(BaseModel):
@@ -88,11 +122,16 @@ class Finding(BaseModel):
 
 
 class ScanCapabilities(BaseModel):
+    contains_archive: bool = False
     contains_wheel: bool = False
     contains_sdist: bool = False
+    contains_npm_package: bool = False
+    contains_oci_manifest: bool = False
+    generic_unidentified: bool = False
     has_pth_exec: bool = False
     has_startup_hook: bool = False
     has_install_hook: bool = False
+    has_lifecycle_scripts: bool = False
     has_native_code: bool = False
     has_hidden_runtime: bool = False
     has_embedded_interpreter: bool = False
@@ -105,9 +144,18 @@ class ScanCapabilities(BaseModel):
     record_validated: bool = False
     record_missing: bool = False
     path_traversal: bool = False
+    npm_integrity_verified: bool = False
+    oci_runs_as_root: bool = False
+    oci_has_secret_env: bool = False
+    oci_has_shell_entrypoint: bool = False
+    oci_mutable_reference: bool = False
+
+    def true_flags(self) -> set[str]:
+        return {name for name, value in self.model_dump().items() if value is True}
 
 
 class ScanReport(BaseModel):
+    ecosystem: Ecosystem = Ecosystem.pypi
     artifact_digest: str
     artifact_filename: str
     scanned_at: datetime = Field(default_factory=utcnow)
@@ -152,12 +200,51 @@ class PolicyDecision(BaseModel):
     evaluated_at: datetime = Field(default_factory=utcnow)
 
 
+class ResolvedArtifact(BaseModel):
+    coordinate: ArtifactCoordinate
+    filename: str
+    url: str | None = None
+    media_type: str | None = None
+    size: int | None = None
+    published_at: datetime | None = None
+    expected_digests: dict[str, str] = Field(default_factory=dict)
+    integrity: str | None = None
+    mutable_reference: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def expected_sha256(self) -> str | None:
+        value = self.expected_digests.get("sha256")
+        if value and value.startswith("sha256:"):
+            return value.split(":", 1)[1]
+        return value
+
+
+class DownloadResult(BaseModel):
+    path: str
+    digest: str
+    size: int
+    verified_digests: dict[str, str] = Field(default_factory=dict)
+    identity_digest_algorithm: str = "sha256"
+
+
 class PermitSubject(BaseModel):
-    ecosystem: Literal["pypi"] = "pypi"
-    project: str
-    version: str
+    ecosystem: Ecosystem = Ecosystem.pypi
+    project: str | None = None
+    name: str | None = None
+    version: str | None
     filename: str
     digest: str
+    media_type: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def set_names(self) -> "PermitSubject":
+        if not self.name and self.project:
+            self.name = self.project
+        if not self.project and self.name:
+            self.project = self.name
+        return self
 
 
 class Permit(BaseModel):
@@ -186,9 +273,27 @@ class AssessmentRequest(BaseModel):
     force_rescan: bool = False
 
 
+class UniversalAssessmentRequest(BaseModel):
+    coordinate: ArtifactCoordinate
+    environment: Environment = Environment.ci
+    sandbox: bool = False
+    force_rescan: bool = False
+
+
 class AssessmentResponse(BaseModel):
     coordinate: ArtifactCoordinate
     file: PyPIFile
+    digest: str
+    storage_path: str | None
+    scan: ScanReport
+    sandbox: SandboxReport | None = None
+    policy: PolicyDecision
+    permit: Permit | None = None
+
+
+class UniversalAssessmentResponse(BaseModel):
+    coordinate: ArtifactCoordinate
+    resolved: ResolvedArtifact
     digest: str
     storage_path: str | None
     scan: ScanReport
@@ -245,3 +350,10 @@ class ReviewApproval(BaseModel):
 class ReviewApprovalResponse(BaseModel):
     approval: ReviewApproval
     permit: Permit
+
+
+class ProviderInfo(BaseModel):
+    ecosystem: Ecosystem
+    upstream: str | None
+    mirrorable: bool = False
+    notes: str | None = None

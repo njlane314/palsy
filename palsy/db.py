@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import ArtifactStatus, Decision, Permit, ReviewApproval, ScanReport
+from .models import ArtifactStatus, Decision, Permit, ResolvedArtifact, ReviewApproval, ScanReport
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS artifacts (
   url TEXT,
   size INTEGER,
   upload_time TEXT,
+  media_type TEXT,
+  published_at TEXT,
+  resolved_json TEXT,
   status TEXT NOT NULL,
   storage_path TEXT,
   created_at TEXT NOT NULL,
@@ -115,6 +118,14 @@ class Database:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._ensure_column(conn, "artifacts", "media_type", "TEXT")
+            self._ensure_column(conn, "artifacts", "published_at", "TEXT")
+            self._ensure_column(conn, "artifacts", "resolved_json", "TEXT")
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def upsert_artifact(
         self,
@@ -157,6 +168,58 @@ class Database:
                     url,
                     size,
                     upload_time,
+                    status.value,
+                    storage_path,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+    def upsert_resolved_artifact(
+        self,
+        *,
+        digest: str,
+        resolved: ResolvedArtifact,
+        status: ArtifactStatus,
+        storage_path: str | None,
+        size: int | None = None,
+    ) -> None:
+        timestamp = now_iso()
+        coordinate = resolved.coordinate
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO artifacts(ecosystem, project, version, filename, digest, url, size, upload_time,
+                                      media_type, published_at, resolved_json, status, storage_path,
+                                      created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(digest) DO UPDATE SET
+                  ecosystem=excluded.ecosystem,
+                  project=excluded.project,
+                  version=excluded.version,
+                  filename=excluded.filename,
+                  url=excluded.url,
+                  size=excluded.size,
+                  upload_time=excluded.upload_time,
+                  media_type=excluded.media_type,
+                  published_at=excluded.published_at,
+                  resolved_json=excluded.resolved_json,
+                  status=excluded.status,
+                  storage_path=excluded.storage_path,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    coordinate.ecosystem.value,
+                    coordinate.name or coordinate.project or "unnamed",
+                    coordinate.version,
+                    resolved.filename,
+                    digest,
+                    resolved.url,
+                    size or resolved.size,
+                    resolved.published_at.isoformat() if resolved.published_at else None,
+                    resolved.media_type,
+                    resolved.published_at.isoformat() if resolved.published_at else None,
+                    resolved.model_dump_json(),
                     status.value,
                     storage_path,
                     timestamp,
@@ -308,6 +371,22 @@ class Database:
             rows = conn.execute(query, params).fetchall()
             return [dict(row) for row in rows]
 
+    def artifacts_for_package(
+        self,
+        ecosystem: str,
+        project: str,
+        status: ArtifactStatus | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM artifacts WHERE ecosystem=? AND project=?"
+        params: list[Any] = [ecosystem, project]
+        if status is not None:
+            query += " AND status=?"
+            params.append(status.value)
+        query += " ORDER BY created_at DESC"
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
     def review_artifacts(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -362,6 +441,19 @@ class Database:
                 ORDER BY version, filename
                 """,
                 (project, ArtifactStatus.allowed.value),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def allowed_files_for_ecosystem_project(self, ecosystem: str, project: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM artifacts
+                WHERE ecosystem=? AND project=? AND status=?
+                ORDER BY version, filename
+                """,
+                (ecosystem, project, ArtifactStatus.allowed.value),
             ).fetchall()
             return [dict(row) for row in rows]
 

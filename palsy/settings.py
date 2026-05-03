@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     port: int = 8080
     state_dir: Path = Field(default=Path("./state"))
     upstream_pypi: str = "https://pypi.org"
+    upstream_npm: str = "https://registry.npmjs.org"
+    npm_token: str | None = None
+    oci_username: str | None = None
+    oci_password: str | None = None
     policy_file: Path | None = None
     signing_key_file: Path | None = None
     sandbox_backend: Literal["none", "docker"] = "none"

@@ -1,8 +1,8 @@
 # Palsy
 
-A production-shaped PyPI ingress firewall for Python dependencies. It resolves PyPI releases to exact artefacts, downloads them into quarantine, verifies SHA-256, statically scans wheels/source distributions, optionally imports them inside a Docker sandbox, evaluates policy, promotes allowed artefacts into an internal Simple API mirror, and emits signed Ed25519 permits.
+A production-shaped software supply-chain firewall for Python, npm, OCI images, and generic URL artefacts. It resolves package or image references to exact artefacts, downloads them into quarantine, verifies available digests, statically scans them, evaluates policy, promotes allowed artefacts into internal mirrors where supported, and emits signed Ed25519 permits.
 
-This implementation is intentionally focused on Python/PyPI because that is where the recent `.pth`/import-time backdoor class matters. The same architecture can be extended to npm, Maven, OCI, Go modules, and NuGet.
+The PyPI path remains fully supported, including the compatibility endpoint and Simple API mirror. Palsy now also has provider adapters for npm tarballs, OCI image metadata bundles, and generic HTTP(S) downloads with caller-supplied digests.
 
 ## What it enforces
 
@@ -17,6 +17,11 @@ The firewall blocks or requires review for signals such as:
 - native binaries in packages not allowlisted for native code;
 - large obfuscated blobs or base64-like payloads;
 - malformed or invalid wheel `RECORD` hashes;
+- npm install/lifecycle scripts;
+- suspicious JavaScript subprocess, environment, or network references;
+- OCI images that default to root, carry secret-like environment variables, or use shell/downloader entrypoints;
+- mutable OCI tags when policy requires immutable digests;
+- generic production artefacts without caller-supplied expected digests;
 - path-traversal entries in archive members;
 - fresh releases inside a configurable quarantine window;
 - suspicious authority deltas from the previous approved version.
@@ -26,11 +31,11 @@ When a package is allowed, the service produces a signed permit for the exact ar
 ## Architecture
 
 ```text
-pip / CI / API request
+pip / npm / OCI / CI / API request
         |
         v
 +---------------------+
-| PyPI resolver        |  GET /pypi/{project}/{version}/json
+| Provider resolver    |  PyPI / npm / OCI / generic URL
 +----------+----------+
            |
            v
@@ -40,7 +45,7 @@ pip / CI / API request
            |
            v
 +---------------------+     optional      +----------------------+
-| Static scanner       | ---------------> | Docker import sandbox |
+| Static scanner       | ---------------> | Optional sandbox      |
 +----------+----------+                  +----------------------+
            |
            v
@@ -75,7 +80,33 @@ docker compose up --build
 
 The API is available at `http://127.0.0.1:8080/docs`.
 
-## Assess a package
+## Assess a Package
+
+The ecosystem-neutral endpoint is `POST /v1/artifacts/assess`:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/artifacts/assess \
+  -H 'X-API-Token: dev-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"coordinate":{"ecosystem":"npm","name":"is-number","version":"7.0.0"},"environment":"ci"}' | jq .policy
+```
+
+Generic URL artefacts should provide an expected digest, especially for production:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/artifacts/assess \
+  -H 'X-API-Token: dev-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"coordinate":{"ecosystem":"generic","name":"https://example.com/tool.tgz","expected_digest":"sha256:..."},"environment":"ci"}' | jq .policy
+```
+
+OCI references use `name` for the image and `version` for the tag or digest:
+
+```json
+{"coordinate":{"ecosystem":"oci","name":"docker.io/library/python","version":"sha256:...","platform":"linux/amd64"},"environment":"ci"}
+```
+
+The PyPI compatibility endpoint still accepts the original shape:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/v1/artifacts/pypi/assess \
@@ -90,7 +121,7 @@ For production sandboxing, set:
 export PALSY_SANDBOX_BACKEND=docker
 ```
 
-Then request:
+Then request through the PyPI compatibility endpoint:
 
 ```json
 {"project":"some-package","version":"1.2.3","environment":"prod","sandbox":true}
@@ -115,9 +146,19 @@ PALSY_URL=http://127.0.0.1:8080 PALSY_API_TOKEN=dev-token scripts/palsy-pip-inst
 The wrapper calls the assessment API first, then invokes pip against the internal mirror only if the policy decision is `allow`.
 Set `PALSY_API_TOKEN` for the wrapper when API authentication is enabled, which is the default.
 
+For npm, assess and install with:
+
+```bash
+PALSY_URL=http://127.0.0.1:8080 PALSY_API_TOKEN=dev-token scripts/palsy-npm-install is-number@7.0.0
+```
+
+Approved npm tarballs are exposed through `http://127.0.0.1:8080/npm/{package}`. OCI and generic URL artefacts are assessment/permit flows; they do not yet expose a complete registry mirror.
+
 ## API summary
 
 ```text
+GET  /v1/ecosystems                  List available provider adapters
+POST /v1/artifacts/assess            Ecosystem-neutral assess endpoint
 POST /v1/artifacts/pypi/assess       Resolve, download, scan, decide, and maybe permit
 GET  /v1/permits/{permit_id}         Fetch and verify a permit
 GET  /v1/permits/by-digest/{sha256}  Fetch latest valid permit for an artefact digest
@@ -126,6 +167,7 @@ GET  /v1/reviews                     List artefacts waiting for review
 POST /v1/reviews/{sha256}/approve    Record reviewer approval and issue a permit
 GET  /v1/blast-radius/{sha256}       Local artefact/permit/decision history
 GET  /simple/{project}/              Approved PyPI Simple API index
+GET  /npm/{package}                  Approved npm packument
 GET  /files/{sha256}/{filename}      Approved artefact content
 GET  /v1/public-key                  Ed25519 public key for permit verification
 ```
@@ -171,10 +213,15 @@ allow_native_code:
   - numpy
   - scipy
   - cryptography
+allow_lifecycle_scripts: []
+allow_embedded_interpreter: []
 max_allowed_severity: medium
 review_on_severity: high
 permit_ttl_seconds: 604800
 require_sandbox_for_prod: true
+deny_oci_mutable_tags_in_prod: true
+review_oci_mutable_tags_in_ci: true
+require_expected_digest_for_generic_prod: true
 ```
 
 The default config deliberately denies high-severity static findings. Relax this in observe mode first if you deploy it in an existing environment.
@@ -183,6 +230,7 @@ The default config deliberately denies high-severity static findings. Relax this
 
 ```bash
 palsy scan ./some-package-1.2.3-py3-none-any.whl
+palsy scan ./some-npm-package-1.0.0.tgz
 ```
 
 ## Examples
@@ -197,6 +245,7 @@ Assess a real package through the running API:
 
 ```bash
 PALSY_API_TOKEN=dev-token python examples/assess_real_package.py
+PALSY_API_TOKEN=dev-token python examples/assess_universal.py
 ```
 
 For CI integration, see `examples/github-actions-palsy.yml`. The committed `.github/workflows/ci.yml` runs tests and builds the package on every push and pull request.
@@ -210,8 +259,9 @@ pytest -q
 ## Operational notes
 
 - Route CI and developer installs through this service or the wrapper; optional controls are not firewalls.
-- Use the internal mirror as the only package source in production builds.
+- Use the internal PyPI/npm mirrors as the only package source in production builds where mirror support exists.
 - Give dependency-resolution jobs no deployment secrets.
+- For OCI and generic artefacts, enforce permit checks in CI/deployment because Palsy does not act as a full registry proxy for those ecosystems yet.
 - Run the service behind TLS and keep `PALSY_API_TOKEN` enabled.
 - Store `PALSY_STATE_DIR` on durable storage. It contains quarantine files, the internal mirror, SQLite state, and signing keys; losing it invalidates operational history and may rotate the permit signing key.
 - For high volume, port `palsy.db.Database` to Postgres.
@@ -220,4 +270,4 @@ pytest -q
 
 ## Current limitations
 
-This is a complete working implementation for PyPI artefact ingress, not a universal supply-chain platform. It does not yet include OCI image admission, package publisher identity attestations, Sigstore verification, eBPF syscall tracing, or a graph database for lockfile/build/image/deployment reachability. The code is structured so those controls can be added behind the same `Permit` and `PolicyContext` abstractions.
+This is a working multi-ecosystem ingress firewall, not a complete enterprise supply-chain platform. PyPI and npm have internal mirror surfaces; OCI and generic URL support currently provide assessment, quarantine, scanning, policy decisions, and signed permits. It does not yet include package publisher identity attestations, Sigstore verification, eBPF syscall tracing, or a graph database for lockfile/build/image/deployment reachability.

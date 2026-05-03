@@ -18,8 +18,13 @@ allow_native_code:
 allow_import_network:
   - certifi
 allow_hidden_runtime: []
+allow_lifecycle_scripts: []
+allow_embedded_interpreter: []
 trusted_publishers: {}
 max_allowed_severity: medium
 review_on_severity: high
 permit_ttl_seconds: 604800
 require_sandbox_for_prod: true
+deny_oci_mutable_tags_in_prod: true
+review_oci_mutable_tags_in_ci: true
+require_expected_digest_for_generic_prod: true

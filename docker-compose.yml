@@ -8,6 +8,7 @@ services:
       PALSY_STATE_DIR: /var/lib/palsy
       PALSY_POLICY_FILE: /app/config/policy.example.yaml
       PALSY_UPSTREAM_PYPI: https://pypi.org
+      PALSY_UPSTREAM_NPM: https://registry.npmjs.org
       PALSY_REQUIRE_API_TOKEN: "true"
       PALSY_API_TOKEN: ${PALSY_API_TOKEN:?Set PALSY_API_TOKEN before starting Palsy}
       PALSY_LOG_LEVEL: ${PALSY_LOG_LEVEL:-INFO}

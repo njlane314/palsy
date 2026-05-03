@@ -5,12 +5,23 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
 
-from .models import Decision, Environment, PolicyDecision, SandboxReport, ScanReport, Severity, SEVERITY_RANK, PyPIFile
+from .models import (
+    Decision,
+    Ecosystem,
+    Environment,
+    PolicyDecision,
+    ResolvedArtifact,
+    SandboxReport,
+    ScanReport,
+    Severity,
+    SEVERITY_RANK,
+    PyPIFile,
+)
 
 
 class PolicyConfig(BaseModel):
@@ -21,11 +32,16 @@ class PolicyConfig(BaseModel):
     allow_native_code: list[str] = Field(default_factory=list)
     allow_import_network: list[str] = Field(default_factory=list)
     allow_hidden_runtime: list[str] = Field(default_factory=list)
+    allow_lifecycle_scripts: list[str] = Field(default_factory=list)
+    allow_embedded_interpreter: list[str] = Field(default_factory=list)
     trusted_publishers: dict[str, str] = Field(default_factory=dict)
     max_allowed_severity: Severity = Severity.medium
     review_on_severity: Severity = Severity.high
     permit_ttl_seconds: int = 604800
     require_sandbox_for_prod: bool = True
+    deny_oci_mutable_tags_in_prod: bool = True
+    review_oci_mutable_tags_in_ci: bool = True
+    require_expected_digest_for_generic_prod: bool = True
 
     @classmethod
     def load(cls, path: Path | None) -> "PolicyConfig":
@@ -44,10 +60,12 @@ class PolicyConfig(BaseModel):
 @dataclass
 class PolicyContext:
     project: str
-    version: str
+    version: str | None
     environment: Environment
-    file: PyPIFile
     scan: ScanReport
+    file: PyPIFile | None = None
+    ecosystem: Ecosystem = Ecosystem.pypi
+    resolved: ResolvedArtifact | None = None
     sandbox: SandboxReport | None = None
     previous_scan: ScanReport | None = None
     revoked: bool = False
@@ -61,11 +79,12 @@ class PolicyEngine:
         deny: list[str] = []
         review: list[str] = []
         project = ctx.project.lower().replace("_", "-")
+        ecosystem = ctx.ecosystem
 
         if ctx.revoked:
             deny.append("artefact digest has been revoked")
 
-        if ctx.file.yanked:
+        if ctx.file and ctx.file.yanked:
             deny.append("upstream file is yanked")
 
         age_reason = self._release_age_reason(ctx)
@@ -86,6 +105,10 @@ class PolicyEngine:
             deny.append("executable .pth startup hook is not allowlisted")
         if caps.has_hidden_runtime and project not in self._norm_list(self.config.allow_hidden_runtime):
             deny.append("hidden/runtime staging directory is not allowlisted")
+        if caps.has_embedded_interpreter and project not in self._norm_list(self.config.allow_embedded_interpreter):
+            deny.append("embedded secondary interpreter/runtime is not allowlisted")
+        if caps.has_lifecycle_scripts and project not in self._norm_list(self.config.allow_lifecycle_scripts):
+            review.append("npm install/lifecycle script is not allowlisted")
         if caps.has_native_code and project not in self._norm_list(self.config.allow_native_code):
             if ctx.environment == Environment.prod:
                 review.append("native code present and package is not native-code allowlisted")
@@ -96,10 +119,26 @@ class PolicyEngine:
         if caps.references_network and project not in self._norm_list(self.config.allow_import_network):
             review.append("artefact references network behaviour")
 
+        if ecosystem == Ecosystem.oci and (caps.oci_mutable_reference or (ctx.resolved and ctx.resolved.mutable_reference)):
+            if ctx.environment == Environment.prod and self.config.deny_oci_mutable_tags_in_prod:
+                deny.append("OCI production artefact was requested by mutable tag rather than digest")
+            elif ctx.environment == Environment.ci and self.config.review_oci_mutable_tags_in_ci:
+                review.append("OCI artefact was requested by mutable tag")
+
+        if ecosystem == Ecosystem.generic and ctx.environment == Environment.prod:
+            if self.config.require_expected_digest_for_generic_prod and not (
+                ctx.resolved and ctx.resolved.expected_digests
+            ):
+                deny.append("generic production artefact has no caller-supplied expected digest")
+
         if ctx.previous_scan:
             self._evaluate_diff(ctx.scan, ctx.previous_scan, ctx.environment, deny, review)
 
-        if ctx.environment == Environment.prod and self.config.require_sandbox_for_prod:
+        if (
+            ctx.environment == Environment.prod
+            and self.config.require_sandbox_for_prod
+            and ecosystem in {Ecosystem.pypi, Ecosystem.npm}
+        ):
             if not ctx.sandbox or not ctx.sandbox.enabled or not ctx.sandbox.executed:
                 deny.append("production policy requires sandbox execution")
 
@@ -137,9 +176,11 @@ class PolicyEngine:
         )
 
     def _release_age_reason(self, ctx: PolicyContext) -> str | None:
-        uploaded = ctx.file.upload_time_iso_8601
+        uploaded = ctx.file.upload_time_iso_8601 if ctx.file else None
+        if uploaded is None and ctx.resolved:
+            uploaded = ctx.resolved.published_at
         if not uploaded:
-            return "upstream upload timestamp is unavailable"
+            return None if ctx.ecosystem in {Ecosystem.oci, Ecosystem.generic} else "upstream upload timestamp is unavailable"
         if uploaded.tzinfo is None:
             uploaded = uploaded.replace(tzinfo=timezone.utc)
         minimum = self.config.minimum_release_age_seconds.get(

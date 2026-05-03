@@ -15,6 +15,15 @@ def normalize_project_name(name: str) -> str:
     return NORMALIZE_RE.sub("-", name).lower().strip()
 
 
+def normalize_pypi_name(name: str) -> str:
+    return normalize_project_name(name)
+
+
+def storage_key(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._@+-]+", "-", value.strip())
+    return cleaned.strip("-") or "unnamed"
+
+
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -25,6 +34,30 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def digest_file(path: Path, algorithm: str, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.new(algorithm)
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def parse_digest(value: str | None) -> tuple[str, str] | None:
+    if not value:
+        return None
+    if ":" in value:
+        algorithm, digest = value.split(":", 1)
+    elif "=" in value:
+        algorithm, digest = value.split("=", 1)
+    else:
+        return "sha256", value
+    algorithm = algorithm.lower().strip()
+    digest = digest.lower().strip()
+    if not algorithm or not digest:
+        return None
+    return algorithm, digest
 
 
 def canonical_json(data: Any) -> bytes:

@@ -19,14 +19,18 @@ from .models import (
     Environment,
     Permit,
     PermitSubject,
+    ResolvedArtifact,
     ReviewApproval,
     ReviewApprovalRequest,
     ReviewApprovalResponse,
     ReviewItem,
     RevokeResponse,
+    UniversalAssessmentRequest,
+    UniversalAssessmentResponse,
 )
 from .permits import PermitSigner
 from .policy import PolicyConfig, PolicyContext, PolicyEngine
+from .providers import ProviderRegistry
 from .pypi_client import PyPIClient
 from .scanner import StaticArtifactScanner
 from .settings import Settings
@@ -47,6 +51,7 @@ class FirewallService:
             timeout_seconds=settings.http_timeout_seconds,
             allow_http=settings.allow_insecure_upstream_http,
         )
+        self.providers = ProviderRegistry(settings)
         self.scanner = StaticArtifactScanner()
         self.policy_config = PolicyConfig.load(settings.policy_file)
         self.policy = PolicyEngine(self.policy_config)
@@ -179,6 +184,110 @@ class FirewallService:
             permit=permit,
         )
 
+    async def assess_universal(self, request: UniversalAssessmentRequest) -> UniversalAssessmentResponse:
+        provider = self.providers.get(request.coordinate.ecosystem)
+        resolved = await provider.resolve(request.coordinate)
+        quarantine_path = self.mirror.quarantine_path_for_resolved(resolved)
+        download = await provider.download(resolved, quarantine_path, self.settings.max_artifact_bytes)
+        digest = download.digest
+
+        self.db.upsert_resolved_artifact(
+            digest=digest,
+            resolved=resolved,
+            status=ArtifactStatus.quarantined,
+            storage_path=download.path,
+            size=download.size,
+        )
+
+        scan = None if request.force_rescan else self.db.latest_scan(digest)
+        if scan is None:
+            scan = self.scanner.scan(Path(download.path), resolved=resolved, digest=digest)
+            if download.verified_digests:
+                scan.metadata["verified_digests"] = download.verified_digests
+            self.db.save_scan(scan)
+
+        should_sandbox = request.sandbox or (
+            request.environment == Environment.prod
+            and self.policy_config.require_sandbox_for_prod
+            and resolved.coordinate.ecosystem.value in {"pypi", "npm"}
+        )
+        sandbox = None
+        if should_sandbox:
+            sandbox = await run_sandbox_if_enabled(
+                self.settings.sandbox_backend,
+                Path(download.path),
+                scan.top_level_modules,
+                timeout_seconds=self.settings.sandbox_timeout_seconds,
+            )
+
+        previous_scan = self._previous_allowed_scan_universal(resolved)
+        policy_result = self.policy.evaluate(
+            PolicyContext(
+                project=resolved.coordinate.name or resolved.coordinate.project or "unnamed",
+                version=resolved.coordinate.version,
+                ecosystem=resolved.coordinate.ecosystem,
+                environment=request.environment,
+                resolved=resolved,
+                scan=scan,
+                sandbox=sandbox,
+                previous_scan=previous_scan,
+                revoked=self.db.is_revoked(digest),
+            )
+        )
+        self.db.save_decision(
+            artifact_digest=digest,
+            environment=request.environment.value,
+            decision=policy_result.decision,
+            policy_name=policy_result.policy_name,
+            policy_hash=policy_result.policy_hash,
+            reasons=policy_result.reasons,
+        )
+        self._log_policy_decision(
+            project=resolved.coordinate.name or resolved.coordinate.project or "unnamed",
+            version=resolved.coordinate.version or "unversioned",
+            filename=resolved.filename,
+            digest=digest,
+            environment=request.environment,
+            decision=policy_result.decision,
+            reasons=policy_result.reasons,
+            policy_name=policy_result.policy_name,
+            policy_hash=policy_result.policy_hash,
+        )
+
+        storage_path: Path | None = None
+        permit: Permit | None = None
+        if policy_result.decision == Decision.allow:
+            storage_path = self.mirror.promote_universal(Path(download.path), digest, resolved.filename)
+            self.db.upsert_resolved_artifact(
+                digest=digest,
+                resolved=resolved,
+                status=ArtifactStatus.allowed,
+                storage_path=str(storage_path),
+                size=download.size,
+            )
+            permit = self._issue_permit_for_resolved(
+                resolved,
+                digest,
+                request.environment,
+                scan,
+                policy_result.reasons,
+            )
+        elif policy_result.decision == Decision.review:
+            self.db.set_artifact_status(digest, ArtifactStatus.review)
+        else:
+            self.db.set_artifact_status(digest, ArtifactStatus.denied)
+
+        return UniversalAssessmentResponse(
+            coordinate=resolved.coordinate,
+            resolved=resolved,
+            digest=digest,
+            storage_path=str(storage_path) if storage_path else None,
+            scan=scan,
+            sandbox=sandbox,
+            policy=policy_result,
+            permit=permit,
+        )
+
     def permit_by_id(self, permit_id: str) -> Permit | None:
         permit = self.db.get_permit(permit_id)
         if permit and self.signer.verify(permit):
@@ -194,6 +303,9 @@ class FirewallService:
     def revoke(self, digest: str, reason: str, actor: str) -> RevokeResponse:
         self.db.revoke(digest, reason, actor)
         return RevokeResponse(digest=digest, revoked=True, reason=reason, actor=actor, revoked_at=utcnow())
+
+    def provider_infos(self):
+        return self.providers.infos()
 
     def review_queue(self, limit: int = 100) -> list[ReviewItem]:
         items: list[ReviewItem] = []
@@ -252,12 +364,10 @@ class FirewallService:
             policy_name=self.policy_config.name,
             policy_hash=self.policy_config.hash,
         )
-        storage_path = self.mirror.promote(
-            source,
-            artifact["project"],
-            artifact["version"],
-            digest,
-            artifact["filename"],
+        storage_path = (
+            self.mirror.promote(source, artifact["project"], artifact["version"], digest, artifact["filename"])
+            if artifact["ecosystem"] == "pypi"
+            else self.mirror.promote_universal(source, digest, artifact["filename"])
         )
         self.db.upsert_artifact(
             ecosystem=artifact["ecosystem"],
@@ -275,10 +385,13 @@ class FirewallService:
 
         permit = Permit(
             subject=PermitSubject(
+                ecosystem=artifact["ecosystem"],
                 project=artifact["project"],
+                name=artifact["project"],
                 version=artifact["version"],
                 filename=artifact["filename"],
                 digest=digest,
+                media_type=artifact.get("media_type"),
             ),
             decision=Decision.allow,
             environment=request.environment,
@@ -314,8 +427,13 @@ class FirewallService:
 
     def simple_index(self, project: str) -> str:
         normalized = normalize_project_name(project)
-        rows = self.db.allowed_files_for_project(normalized)
+        rows = self.db.allowed_files_for_ecosystem_project("pypi", normalized)
         return self.mirror.simple_index_html(normalized, rows)
+
+    def npm_packument(self, package: str, base_url: str = "") -> dict[str, Any]:
+        name = package.strip().lower()
+        rows = self.db.allowed_files_for_ecosystem_project("npm", name)
+        return self.mirror.npm_packument(name, rows, base_url=base_url)
 
     def file_by_digest(self, digest: str, filename: str) -> Path | None:
         artifact = self.db.get_artifact(digest)
@@ -342,11 +460,68 @@ class FirewallService:
         _, digest = sorted(candidates, key=lambda item: item[0])[-1]
         return self.db.latest_scan(digest)
 
+    def _previous_allowed_scan_universal(self, resolved: ResolvedArtifact):
+        current = self._parse_version(resolved.coordinate.version)
+        if current is None:
+            return None
+        candidates = []
+        name = resolved.coordinate.name or resolved.coordinate.project or "unnamed"
+        for row in self.db.artifacts_for_package(
+            resolved.coordinate.ecosystem.value,
+            name,
+            ArtifactStatus.allowed,
+        ):
+            candidate_version = self._parse_version(row["version"])
+            if candidate_version is not None and candidate_version < current:
+                candidates.append((candidate_version, row["digest"]))
+        if not candidates:
+            return None
+        _, digest = sorted(candidates, key=lambda item: item[0])[-1]
+        return self.db.latest_scan(digest)
+
     def _parse_version(self, version: str) -> Version | None:
+        if not version:
+            return None
         try:
             return Version(version)
         except InvalidVersion:
             return None
+
+    def _issue_permit_for_resolved(
+        self,
+        resolved: ResolvedArtifact,
+        digest: str,
+        environment: Environment,
+        scan,
+        reasons: list[str],
+    ) -> Permit:
+        permit = Permit(
+            subject=PermitSubject(
+                ecosystem=resolved.coordinate.ecosystem,
+                project=resolved.coordinate.name or resolved.coordinate.project,
+                name=resolved.coordinate.name or resolved.coordinate.project,
+                version=resolved.coordinate.version,
+                filename=resolved.filename,
+                digest=digest,
+                media_type=resolved.media_type,
+                metadata={
+                    "url": resolved.url,
+                    "mutable_reference": resolved.mutable_reference,
+                    "package_metadata": resolved.metadata,
+                },
+            ),
+            decision=Decision.allow,
+            environment=environment,
+            policy_name=self.policy_config.name,
+            policy_hash=self.policy_config.hash,
+            expires_at=utcnow() + timedelta(seconds=self.policy_config.permit_ttl_seconds),
+            capabilities=scan.capabilities,
+            findings=scan.findings,
+            reasons=reasons,
+        )
+        permit = self.signer.sign(permit)
+        self.db.save_permit(permit)
+        return permit
 
     def _log_policy_decision(
         self,

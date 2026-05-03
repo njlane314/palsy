@@ -4,20 +4,24 @@ import logging
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .models import (
     AssessmentRequest,
     AssessmentResponse,
     Permit,
+    ProviderInfo,
     ReviewApprovalRequest,
     ReviewApprovalResponse,
     ReviewItem,
     RevokeRequest,
     RevokeResponse,
+    UniversalAssessmentRequest,
+    UniversalAssessmentResponse,
 )
 from .pypi_client import PyPIClientError
+from .providers import ProviderError
 from .service import FirewallService
 from .settings import Settings, get_settings
 
@@ -53,14 +57,36 @@ def require_api_token(
 
 app = FastAPI(
     title="Palsy",
-    version="0.1.0",
-    description="PyPI artefact firewall with quarantine, static scanning, optional sandboxing, policy decisions, signed permits, and an internal simple index.",
+    version="0.2.0",
+    description="Ecosystem-neutral software supply-chain firewall with adapter-based resolution, quarantine scanning, signed permits, and internal mirrors where supported.",
 )
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/v1/ecosystems", response_model=list[ProviderInfo])
+def ecosystems(service: FirewallService = Depends(get_service)) -> list[ProviderInfo]:
+    return service.provider_infos()
+
+
+@app.post(
+    "/v1/artifacts/assess",
+    response_model=UniversalAssessmentResponse,
+    dependencies=[Depends(require_api_token)],
+)
+async def assess_universal(
+    request: UniversalAssessmentRequest,
+    service: FirewallService = Depends(get_service),
+) -> UniversalAssessmentResponse:
+    try:
+        return await service.assess_universal(request)
+    except ProviderError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @app.post(
@@ -147,6 +173,16 @@ def simple_index(project: str, service: FirewallService = Depends(get_service)) 
     return HTMLResponse(service.simple_index(project))
 
 
+@app.get("/npm/{package:path}")
+def npm_packument(
+    package: str,
+    request: Request,
+    service: FirewallService = Depends(get_service),
+) -> JSONResponse:
+    base_url = str(request.base_url).rstrip("/")
+    return JSONResponse(service.npm_packument(package, base_url=base_url))
+
+
 @app.get("/files/{digest}/{filename}")
 def files(digest: str, filename: str, service: FirewallService = Depends(get_service)) -> FileResponse:
     path = service.file_by_digest(digest, filename)
@@ -163,6 +199,9 @@ def public_key(service: FirewallService = Depends(get_service)) -> dict[str, str
 @app.get("/")
 def root() -> Response:
     return Response(
-        content="Palsy. Use /docs for API docs; use /simple/{project}/ for the approved PyPI mirror.\n",
+        content=(
+            "Palsy. Use /docs for API docs, /simple/{project}/ for approved PyPI, "
+            "and /npm/{package} for approved npm packuments.\n"
+        ),
         media_type="text/plain",
     )
