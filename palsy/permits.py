@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
@@ -10,6 +11,25 @@ from pydantic import BaseModel
 
 from .models import BuildPermit, Permit
 from .utils import canonical_json
+
+
+def verify_signed_model(model: BaseModel) -> bool:
+    try:
+        public_key = getattr(model, "public_key")
+        encoded_signature = getattr(model, "signature")
+        if not public_key or not encoded_signature:
+            return False
+        public = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key))
+        signature = base64.b64decode(encoded_signature)
+        unsigned = model.model_copy(update={"signature": None})
+        public.verify(signature, _payload(unsigned))
+        return True
+    except (InvalidSignature, ValueError, TypeError, binascii.Error):
+        return False
+
+
+def verify_build_permit_document(permit: BuildPermit) -> bool:
+    return verify_signed_model(permit)
 
 
 class PermitSigner:
@@ -62,19 +82,12 @@ class PermitSigner:
         return signed.model_copy(update={"signature": base64.b64encode(signature).decode("ascii")})
 
     def _verify_model(self, model: BaseModel) -> bool:
-        try:
-            public_key = getattr(model, "public_key")
-            encoded_signature = getattr(model, "signature")
-            if not public_key or not encoded_signature:
-                return False
-            public = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key))
-            signature = base64.b64decode(encoded_signature)
-            unsigned = model.model_copy(update={"signature": None})
-            public.verify(signature, self._payload(unsigned))
-            return True
-        except (InvalidSignature, ValueError, TypeError):
-            return False
+        return verify_signed_model(model)
 
     def _payload(self, model: BaseModel) -> bytes:
-        data = model.model_dump(mode="json", exclude={"signature"})
-        return canonical_json(data)
+        return _payload(model)
+
+
+def _payload(model: BaseModel) -> bytes:
+    data = model.model_dump(mode="json", exclude={"signature"})
+    return canonical_json(data)

@@ -115,6 +115,67 @@ curl -sS -X POST http://127.0.0.1:8080/v1/artifacts/pypi/assess \
   -d '{"project":"requests","version":"2.32.3","environment":"ci"}' | jq .policy
 ```
 
+## Use Palsy as a CI Dependency Gate
+
+For low-touch adoption, Palsy can run directly inside CI without first deploying the HTTP API or mirror service.
+
+Bootstrap a repository:
+
+```bash
+palsy init
+```
+
+Run an observe-only assessment:
+
+```bash
+palsy gate requirements.txt --mode observe
+```
+
+Enforce dependency admission and write a signed build permit:
+
+```bash
+palsy gate requirements.txt \
+  --mode enforce \
+  --environment ci \
+  --policy .palsy/policy.yaml \
+  --permit-out .palsy/permits
+```
+
+Verify the permit before a build or deployment step:
+
+```bash
+palsy verify-permit .palsy/permits/requirements.txt.permit.json \
+  --lockfile requirements.txt \
+  --environment ci
+```
+
+The root `action.yml` also exposes Palsy as a GitHub composite action:
+
+```yaml
+name: Dependency admission
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  palsy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: njlane314/palsy@main
+        with:
+          mode: enforce
+          environment: ci
+          policy: .palsy/policy.yaml
+          lockfiles: |
+            requirements.txt
+            package-lock.json
+```
+
+See [Palsy Gate](docs/PALSY_GATE.md) for the self-serve product path.
+
 For production sandboxing, set:
 
 ```bash

@@ -11,6 +11,7 @@ import urllib.request
 import uvicorn
 
 from .admission_output import format_admission_summary
+from .gate import gate_command, init_command, verify_permit_command
 from .scanner import StaticArtifactScanner
 from .settings import get_settings
 from .utils import sha256_file
@@ -26,6 +27,60 @@ def main() -> None:
 
     scan = sub.add_parser("scan", help="Statically scan a local wheel or sdist")
     scan.add_argument("artifact", type=Path, metavar="artefact")
+
+    init = sub.add_parser(
+        "init",
+        help="Bootstrap a self-serve Palsy Gate policy and CI workflow",
+    )
+    init.add_argument("--directory", type=Path, default=Path.cwd())
+    init.add_argument("--force", action="store_true", help="Overwrite generated files")
+    init.add_argument(
+        "--github-actions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write .github/workflows/palsy.yml",
+    )
+    init.add_argument(
+        "--gitlab-ci",
+        action="store_true",
+        help="Write .gitlab-ci-palsy.yml",
+    )
+
+    gate = sub.add_parser(
+        "gate",
+        help="Assess lockfiles locally and optionally fail CI unless they are admitted",
+    )
+    gate.add_argument("lockfile", type=Path, nargs="*", help="Lockfiles to assess")
+    gate.add_argument("--project", default=None)
+    gate.add_argument(
+        "--environment",
+        choices=["dev", "ci", "prod"],
+        default=os.environ.get("PALSY_ENVIRONMENT", "ci"),
+    )
+    gate.add_argument(
+        "--mode",
+        choices=["observe", "enforce"],
+        default=os.environ.get("PALSY_GATE_MODE", "observe"),
+        help="observe exits 0 after reporting; enforce exits non-zero for review/deny",
+    )
+    gate.add_argument("--policy", type=Path, default=None)
+    gate.add_argument("--state-dir", type=Path, default=None)
+    gate.add_argument("--sandbox", action="store_true")
+    gate.add_argument("--force-rescan", action="store_true")
+    gate.add_argument("--json", action="store_true", dest="json_output")
+    gate.add_argument("--out", type=Path, default=None, help="Write raw admission JSON")
+    gate.add_argument(
+        "--permit-out",
+        type=Path,
+        default=Path(".palsy/permits"),
+        help="Directory or file path for signed build permits",
+    )
+
+    verify = sub.add_parser("verify-permit", help="Verify a signed Palsy build permit")
+    verify.add_argument("permit", type=Path)
+    verify.add_argument("--lockfile", type=Path, required=True)
+    verify.add_argument("--project", default=None)
+    verify.add_argument("--environment", choices=["dev", "ci", "prod"], default=None)
 
     admit_lockfile = sub.add_parser(
         "admit-lockfile",
@@ -53,6 +108,12 @@ def main() -> None:
         digest = sha256_file(args.artifact)
         report = StaticArtifactScanner().scan(args.artifact, digest=digest)
         print(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True))
+    elif args.command == "init":
+        raise SystemExit(init_command(args))
+    elif args.command == "gate":
+        raise SystemExit(gate_command(args))
+    elif args.command == "verify-permit":
+        raise SystemExit(verify_permit_command(args))
     elif args.command == "admit-lockfile":
         raise SystemExit(admit_lockfile_command(args))
 

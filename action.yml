@@ -1,0 +1,74 @@
+name: Palsy Gate
+description: Self-hosted dependency admission gate for Python, npm, OCI, and generic artefacts.
+
+inputs:
+  lockfiles:
+    description: Newline-separated lockfiles to assess. Defaults to requirements*.txt and package-lock.json auto-discovery.
+    required: false
+    default: ""
+  policy:
+    description: Palsy policy file.
+    required: false
+    default: .palsy/policy.yaml
+  mode:
+    description: observe or enforce. Enforce fails the job unless every assessed lockfile is admitted.
+    required: false
+    default: enforce
+  environment:
+    description: dev, ci, or prod.
+    required: false
+    default: ci
+  project:
+    description: Project name recorded in build permits. Defaults to the repository name.
+    required: false
+    default: ""
+  state-dir:
+    description: Local Palsy state directory used by the action.
+    required: false
+    default: .palsy/state
+  permit-out:
+    description: Directory or file path for signed build permits.
+    required: false
+    default: .palsy/permits
+  json-out:
+    description: Optional path for the raw admission response JSON.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install Palsy
+      shell: bash
+      run: python -m pip install "$GITHUB_ACTION_PATH"
+
+    - name: Run Palsy dependency gate
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        args=()
+        if [ -n "${{ inputs.lockfiles }}" ]; then
+          while IFS= read -r lockfile; do
+            [ -n "$lockfile" ] && args+=("$lockfile")
+          done <<< "${{ inputs.lockfiles }}"
+        fi
+
+        project="${{ inputs.project }}"
+        if [ -z "$project" ]; then
+          project="${GITHUB_REPOSITORY##*/}"
+        fi
+
+        json_args=()
+        if [ -n "${{ inputs.json-out }}" ]; then
+          json_args+=(--out "${{ inputs.json-out }}")
+        fi
+
+        palsy gate "${args[@]}" \
+          --mode "${{ inputs.mode }}" \
+          --environment "${{ inputs.environment }}" \
+          --project "$project" \
+          --policy "${{ inputs.policy }}" \
+          --state-dir "${{ inputs.state-dir }}" \
+          --permit-out "${{ inputs.permit-out }}" \
+          "${json_args[@]}"
