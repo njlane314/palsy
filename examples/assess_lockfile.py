@@ -7,6 +7,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from palsy.admission_output import format_admission_summary
+
 
 def main() -> int:
     base_url = os.environ.get("PALSY_URL", "http://127.0.0.1:8080").rstrip("/")
@@ -47,20 +49,7 @@ def main() -> int:
         print(exc.read().decode("utf-8", errors="replace"), file=sys.stderr)
         return 1
 
-    print(f"project: {result['project']}")
-    print(f"lockfile: {result['lockfile_name']}")
-    print(f"decision: {result['decision']}")
-    print(f"lockfile digest: {result['lockfile_digest']}")
-    print(f"dependencies: {result['dependency_count']}")
-    print("reasons:")
-    for reason in result.get("reasons", []):
-        print(f"  - {reason}")
-    for item in result.get("items", []):
-        coordinate = item["coordinate"]
-        name = coordinate.get("name") or coordinate.get("project")
-        print(f"  {coordinate['ecosystem']}:{name}@{coordinate.get('version')} -> {item['decision']}")
-    if result.get("permit"):
-        print(f"build permit: {result['permit']['id']}")
+    print(format_admission_summary(result))
     return 0
 
 

@@ -10,6 +10,7 @@ import urllib.request
 
 import uvicorn
 
+from .admission_output import format_admission_summary
 from .scanner import StaticArtifactScanner
 from .settings import get_settings
 from .utils import sha256_file
@@ -92,29 +93,8 @@ def admit_lockfile_command(args: argparse.Namespace) -> int:
     if args.json_output:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
-        _print_admission_summary(result)
+        print(format_admission_summary(result))
     return 0 if result.get("decision") == "allow" else 1
-
-
-def _print_admission_summary(result: dict) -> None:
-    print(f"project: {result['project']}")
-    print(f"lockfile: {result['lockfile_name']}")
-    print(f"decision: {result['decision']}")
-    print(f"lockfile digest: {result['lockfile_digest']}")
-    print(f"dependencies: {result['dependency_count']}")
-    print("reasons:")
-    for reason in result.get("reasons", []):
-        print(f"  - {reason}")
-    for item in result.get("items", []):
-        if item.get("decision") == "allow":
-            continue
-        coordinate = item["coordinate"]
-        name = coordinate.get("name") or coordinate.get("project")
-        reasons = "; ".join(item.get("reasons") or [])
-        suffix = f": {reasons}" if reasons else ""
-        print(f"  {coordinate['ecosystem']}:{name}@{coordinate.get('version')} -> {item['decision']}{suffix}")
-    if result.get("permit"):
-        print(f"build permit: {result['permit']['id']}")
 
 
 if __name__ == "__main__":

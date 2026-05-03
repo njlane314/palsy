@@ -35,7 +35,10 @@ def test_admit_lockfile_command_returns_zero_for_allow(monkeypatch, tmp_path, ca
     code = cli.admit_lockfile_command(_args(lockfile))
 
     assert code == 0
-    assert "build permit: permit-1" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Decision: ALLOW" in output
+    assert "Build permit: permit-1" in output
+    assert "Next action: proceed" in output
 
 
 def test_admit_lockfile_command_returns_one_for_denied_graph(monkeypatch, tmp_path, capsys):
@@ -50,7 +53,11 @@ def test_admit_lockfile_command_returns_one_for_denied_graph(monkeypatch, tmp_pa
     code = cli.admit_lockfile_command(_args(lockfile))
 
     assert code == 1
-    assert "decision: deny" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Decision: DENY" in output
+    assert "Most common findings:" in output
+    assert "Denied dependencies (showing 1 of 1):" in output
+    assert "Next action: block the build" in output
 
 
 def _args(lockfile):
@@ -89,7 +96,9 @@ def _admission_response(decision: str, permit_id: str | None = None) -> dict:
                     "version": "3.10",
                 },
                 "decision": decision,
-                "reasons": ["all configured checks passed"],
+                "reasons": ["all configured checks passed"]
+                if decision == "allow"
+                else ["static scan maximum severity high exceeds medium"],
             }
         ],
         "permit": {"id": permit_id} if permit_id else None,
