@@ -9,14 +9,21 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 from .db import Database
+from .lockfiles import parse_lockfile
 from .mirror import MirrorStore
 from .models import (
     ArtifactCoordinate,
     ArtifactStatus,
     AssessmentRequest,
     AssessmentResponse,
+    BuildPermit,
+    BuildPermitDependency,
+    BuildPermitSubject,
     Decision,
     Environment,
+    LockfileAssessmentRequest,
+    LockfileAssessmentResponse,
+    LockfileDependencyResult,
     Permit,
     PermitSubject,
     ResolvedArtifact,
@@ -31,11 +38,12 @@ from .models import (
 from .permits import PermitSigner
 from .policy import PolicyConfig, PolicyContext, PolicyEngine
 from .providers import ProviderRegistry
+from .providers.base import ProviderError
 from .pypi_client import PyPIClient
 from .scanner import StaticArtifactScanner
 from .settings import Settings
 from .sandbox import run_sandbox_if_enabled
-from .utils import normalize_project_name, sha256_file, utcnow
+from .utils import normalize_project_name, sha256_bytes, sha256_file, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +296,86 @@ class FirewallService:
             permit=permit,
         )
 
+    async def assess_lockfile(self, request: LockfileAssessmentRequest) -> LockfileAssessmentResponse:
+        lockfile_digest = sha256_bytes(request.content.encode("utf-8"))
+        coordinates = parse_lockfile(request)
+        items: list[LockfileDependencyResult] = []
+        for coordinate in coordinates:
+            try:
+                response = await self.assess_universal(
+                    UniversalAssessmentRequest(
+                        coordinate=coordinate,
+                        environment=request.environment,
+                        sandbox=request.sandbox,
+                        force_rescan=request.force_rescan,
+                    )
+                )
+            except (ProviderError, ValueError) as exc:
+                items.append(
+                    LockfileDependencyResult(
+                        coordinate=coordinate,
+                        decision=Decision.deny,
+                        reasons=[f"dependency resolution failed: {exc}"],
+                    )
+                )
+                continue
+
+            items.append(
+                LockfileDependencyResult(
+                    coordinate=response.coordinate,
+                    digest=response.digest,
+                    filename=response.resolved.filename,
+                    decision=response.policy.decision,
+                    reasons=response.policy.reasons,
+                    permit_id=response.permit.id if response.permit else None,
+                    max_severity=response.scan.max_severity,
+                    finding_count=len(response.scan.findings),
+                )
+            )
+
+        decision, reasons = self._lockfile_decision(items)
+        permit: BuildPermit | None = None
+        if decision == Decision.allow:
+            dependencies = [
+                BuildPermitDependency(
+                    coordinate=item.coordinate,
+                    digest=item.digest,
+                    permit_id=item.permit_id,
+                )
+                for item in items
+                if item.digest
+            ]
+            permit = BuildPermit(
+                subject=BuildPermitSubject(
+                    project=request.project,
+                    lockfile_name=request.lockfile_name,
+                    lockfile_digest=lockfile_digest,
+                    dependency_count=len(items),
+                    artifact_digests=[dependency.digest for dependency in dependencies],
+                    dependencies=dependencies,
+                ),
+                environment=request.environment,
+                policy_name=self.policy_config.name,
+                policy_hash=self.policy_config.hash,
+                expires_at=utcnow() + timedelta(seconds=self.policy_config.permit_ttl_seconds),
+                reasons=reasons,
+            )
+            permit = self.signer.sign_build_permit(permit)
+
+        return LockfileAssessmentResponse(
+            project=request.project,
+            environment=request.environment,
+            lockfile_name=request.lockfile_name,
+            lockfile_digest=lockfile_digest,
+            dependency_count=len(items),
+            decision=decision,
+            reasons=reasons,
+            policy_name=self.policy_config.name,
+            policy_hash=self.policy_config.hash,
+            items=items,
+            permit=permit,
+        )
+
     def permit_by_id(self, permit_id: str) -> Permit | None:
         permit = self.db.get_permit(permit_id)
         if permit and self.signer.verify(permit):
@@ -522,6 +610,49 @@ class FirewallService:
         permit = self.signer.sign(permit)
         self.db.save_permit(permit)
         return permit
+
+    def _lockfile_decision(self, items: list[LockfileDependencyResult]) -> tuple[Decision, list[str]]:
+        denied = [item for item in items if item.decision == Decision.deny]
+        review = [item for item in items if item.decision == Decision.review]
+        if denied:
+            reasons = [
+                self._count_reason(
+                    len(denied),
+                    "dependency artefact denied",
+                    "dependency artefacts denied",
+                )
+            ]
+            if review:
+                reasons.append(
+                    self._count_reason(
+                        len(review),
+                        "dependency artefact requires review",
+                        "dependency artefacts require review",
+                    )
+                )
+            return Decision.deny, reasons
+        if review:
+            return (
+                Decision.review,
+                [
+                    self._count_reason(
+                        len(review),
+                        "dependency artefact requires review",
+                        "dependency artefacts require review",
+                    )
+                ],
+            )
+        return Decision.allow, [
+            self._count_reason(
+                len(items),
+                "dependency artefact passed policy",
+                "dependency artefacts passed policy",
+            )
+        ]
+
+    def _count_reason(self, count: int, singular: str, plural: str) -> str:
+        noun = singular if count == 1 else plural
+        return f"{count} {noun}"
 
     def _log_policy_decision(
         self,

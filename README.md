@@ -129,6 +129,25 @@ Then request through the PyPI compatibility endpoint:
 
 The Docker sandbox is run with `--network none`, `--cap-drop ALL`, `--security-opt no-new-privileges`, memory/CPU limits, and a Python audit-hook harness. The sandbox is not a substitute for static detection of `.pth` startup hooks, because `.pth` code runs during interpreter startup before normal userland instrumentation can be installed.
 
+## Assess a Lockfile
+
+The lockfile endpoint admits an exact dependency graph and issues a signed build permit only when every dependency artefact is allowed. The first supported formats are pinned Python `requirements*.txt` files and npm `package-lock.json`.
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/lockfiles/assess \
+  -H 'X-API-Token: dev-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"demo-app","lockfile_name":"requirements.txt","content":"idna==3.10\npackaging==24.2\n","environment":"ci"}' | jq .
+```
+
+The response includes the lockfile digest, per-dependency decisions, any individual artefact permit IDs, and a `permit` field only when the whole graph is allowed. That build permit binds the project, environment, lockfile digest, policy hash, dependency count, and dependency artefact digests.
+
+For CI, use the CLI wrapper. It exits `0` only for an allowed graph and exits non-zero for `review`, `deny`, HTTP errors, or unsupported lockfile shapes:
+
+```bash
+PALSY_URL=http://127.0.0.1:8080 PALSY_API_TOKEN=dev-token palsy admit-lockfile requirements.txt --project demo-app
+```
+
 ## Install through the approved mirror
 
 First assess/admit the exact version. If allowed, install using the internal Simple API mirror:
@@ -160,6 +179,7 @@ Approved npm tarballs are exposed through `http://127.0.0.1:8080/npm/{package}`.
 GET  /v1/ecosystems                  List available provider adapters
 POST /v1/artifacts/assess            Ecosystem-neutral assess endpoint
 POST /v1/artifacts/pypi/assess       Resolve, download, scan, decide, and maybe permit
+POST /v1/lockfiles/assess            Assess pinned lockfiles and maybe issue a build permit
 GET  /v1/permits/{permit_id}         Fetch and verify a permit
 GET  /v1/permits/by-digest/{sha256}  Fetch latest valid permit for an artefact digest
 POST /v1/revocations                 Revoke digest and invalidate permits
@@ -246,6 +266,7 @@ Assess a real package through the running API:
 ```bash
 PALSY_API_TOKEN=dev-token python examples/assess_real_package.py
 PALSY_API_TOKEN=dev-token python examples/assess_universal.py
+PALSY_API_TOKEN=dev-token python examples/assess_lockfile.py
 ```
 
 For CI integration, see `examples/github-actions-palsy.yml`. The committed `.github/workflows/ci.yml` runs tests and builds the package on every push and pull request.
@@ -259,6 +280,7 @@ pytest -q
 ## Operational notes
 
 - Route CI and developer installs through this service or the wrapper; optional controls are not firewalls.
+- Assess committed lockfiles in CI and require a build permit before install/build steps consume the graph.
 - Use the internal PyPI/npm mirrors as the only package source in production builds where mirror support exists.
 - Give dependency-resolution jobs no deployment secrets.
 - For OCI and generic artefacts, enforce permit checks in CI/deployment because Palsy does not act as a full registry proxy for those ecosystems yet.
@@ -270,4 +292,4 @@ pytest -q
 
 ## Current limitations
 
-This is a working multi-ecosystem ingress firewall, not a complete enterprise supply-chain platform. PyPI and npm have internal mirror surfaces; OCI and generic URL support currently provide assessment, quarantine, scanning, policy decisions, and signed permits. It does not yet include package publisher identity attestations, Sigstore verification, eBPF syscall tracing, or a graph database for lockfile/build/image/deployment reachability.
+This is a working multi-ecosystem ingress firewall, not a complete enterprise supply-chain platform. PyPI and npm have internal mirror surfaces; OCI and generic URL support currently provide assessment, quarantine, scanning, policy decisions, and signed permits. It does not yet include package publisher identity attestations, Sigstore verification, eBPF syscall tracing, or a graph database for deployment reachability.

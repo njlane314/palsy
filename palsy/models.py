@@ -264,6 +264,35 @@ class Permit(BaseModel):
     public_key: str | None = None
 
 
+class BuildPermitDependency(BaseModel):
+    coordinate: ArtifactCoordinate
+    digest: str
+    permit_id: str | None = None
+
+
+class BuildPermitSubject(BaseModel):
+    project: str = Field(min_length=1, max_length=512)
+    lockfile_name: str = Field(min_length=1, max_length=512)
+    lockfile_digest: str = Field(min_length=64, max_length=128)
+    dependency_count: int = Field(ge=0)
+    artifact_digests: list[str] = Field(default_factory=list)
+    dependencies: list[BuildPermitDependency] = Field(default_factory=list)
+
+
+class BuildPermit(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    subject: BuildPermitSubject
+    decision: Decision = Decision.allow
+    environment: Environment
+    policy_name: str
+    policy_hash: str
+    issued_at: datetime = Field(default_factory=utcnow)
+    expires_at: datetime
+    reasons: list[str] = Field(default_factory=list)
+    signature: str | None = None
+    public_key: str | None = None
+
+
 class AssessmentRequest(BaseModel):
     project: str
     version: str
@@ -275,6 +304,15 @@ class AssessmentRequest(BaseModel):
 
 class UniversalAssessmentRequest(BaseModel):
     coordinate: ArtifactCoordinate
+    environment: Environment = Environment.ci
+    sandbox: bool = False
+    force_rescan: bool = False
+
+
+class LockfileAssessmentRequest(BaseModel):
+    project: str = Field(min_length=1, max_length=512)
+    lockfile_name: str = Field(min_length=1, max_length=512)
+    content: str = Field(min_length=1, max_length=5_000_000)
     environment: Environment = Environment.ci
     sandbox: bool = False
     force_rescan: bool = False
@@ -300,6 +338,31 @@ class UniversalAssessmentResponse(BaseModel):
     sandbox: SandboxReport | None = None
     policy: PolicyDecision
     permit: Permit | None = None
+
+
+class LockfileDependencyResult(BaseModel):
+    coordinate: ArtifactCoordinate
+    digest: str | None = None
+    filename: str | None = None
+    decision: Decision
+    reasons: list[str] = Field(default_factory=list)
+    permit_id: str | None = None
+    max_severity: Severity | None = None
+    finding_count: int = 0
+
+
+class LockfileAssessmentResponse(BaseModel):
+    project: str
+    environment: Environment
+    lockfile_name: str
+    lockfile_digest: str
+    dependency_count: int
+    decision: Decision
+    reasons: list[str] = Field(default_factory=list)
+    policy_name: str
+    policy_hash: str
+    items: list[LockfileDependencyResult] = Field(default_factory=list)
+    permit: BuildPermit | None = None
 
 
 class RevokeRequest(BaseModel):

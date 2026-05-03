@@ -10,6 +10,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from .models import (
     AssessmentRequest,
     AssessmentResponse,
+    LockfileAssessmentRequest,
+    LockfileAssessmentResponse,
     Permit,
     ProviderInfo,
     ReviewApprovalRequest,
@@ -57,8 +59,8 @@ def require_api_token(
 
 app = FastAPI(
     title="Palsy",
-    version="0.2.0",
-    description="Ecosystem-neutral software supply-chain firewall with adapter-based resolution, quarantine scanning, signed permits, and internal mirrors where supported.",
+    version="0.3.0",
+    description="Ecosystem-neutral software supply-chain firewall with adapter-based resolution, lockfile admission, quarantine scanning, signed permits, and internal mirrors where supported.",
 )
 
 
@@ -102,6 +104,21 @@ async def assess_pypi(
         return await service.assess(request)
     except PyPIClientError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/lockfiles/assess",
+    response_model=LockfileAssessmentResponse,
+    dependencies=[Depends(require_api_token)],
+)
+async def assess_lockfile(
+    request: LockfileAssessmentRequest,
+    service: FirewallService = Depends(get_service),
+) -> LockfileAssessmentResponse:
+    try:
+        return await service.assess_lockfile(request)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -201,7 +218,7 @@ def root() -> Response:
     return Response(
         content=(
             "Palsy. Use /docs for API docs, /simple/{project}/ for approved PyPI, "
-            "and /npm/{package} for approved npm packuments.\n"
+            "/npm/{package} for approved npm packuments, and /v1/lockfiles/assess for build permits.\n"
         ),
         media_type="text/plain",
     )

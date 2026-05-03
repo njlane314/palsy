@@ -6,8 +6,9 @@ from pathlib import Path
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from pydantic import BaseModel
 
-from .models import Permit
+from .models import BuildPermit, Permit
 from .utils import canonical_json
 
 
@@ -44,24 +45,36 @@ class PermitSigner:
         return base64.b64encode(raw).decode("ascii")
 
     def sign(self, permit: Permit) -> Permit:
-        permit.public_key = self.public_key_b64
-        permit.signature = None
-        signature = self._private_key.sign(self._payload(permit))
-        permit.signature = base64.b64encode(signature).decode("ascii")
-        return permit
+        return self._sign_model(permit)
 
     def verify(self, permit: Permit) -> bool:
-        if not permit.signature or not permit.public_key:
-            return False
+        return self._verify_model(permit)
+
+    def sign_build_permit(self, permit: BuildPermit) -> BuildPermit:
+        return self._sign_model(permit)
+
+    def verify_build_permit(self, permit: BuildPermit) -> bool:
+        return self._verify_model(permit)
+
+    def _sign_model(self, model: BaseModel):
+        signed = model.model_copy(update={"public_key": self.public_key_b64, "signature": None})
+        signature = self._private_key.sign(self._payload(signed))
+        return signed.model_copy(update={"signature": base64.b64encode(signature).decode("ascii")})
+
+    def _verify_model(self, model: BaseModel) -> bool:
         try:
-            public = Ed25519PublicKey.from_public_bytes(base64.b64decode(permit.public_key))
-            signature = base64.b64decode(permit.signature)
-            unsigned = permit.model_copy(update={"signature": None})
+            public_key = getattr(model, "public_key")
+            encoded_signature = getattr(model, "signature")
+            if not public_key or not encoded_signature:
+                return False
+            public = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key))
+            signature = base64.b64decode(encoded_signature)
+            unsigned = model.model_copy(update={"signature": None})
             public.verify(signature, self._payload(unsigned))
             return True
-        except (InvalidSignature, ValueError):
+        except (InvalidSignature, ValueError, TypeError):
             return False
 
-    def _payload(self, permit: Permit) -> bytes:
-        data = permit.model_dump(mode="json", exclude={"signature"})
+    def _payload(self, model: BaseModel) -> bytes:
+        data = model.model_dump(mode="json", exclude={"signature"})
         return canonical_json(data)
