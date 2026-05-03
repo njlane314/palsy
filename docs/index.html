@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IngressShield | Block unapproved PyPI/npm packages before CI</title>
+    <meta
+      name="description"
+      content="IngressShield blocks unapproved PyPI/npm packages before they enter CI, then emits signed permits for admitted dependency graphs."
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #151515;
+        --muted: #5d6066;
+        --line: #d9dde2;
+        --surface: #ffffff;
+        --wash: #f5f7f8;
+        --forest: #116149;
+        --forest-strong: #0a4d39;
+        --amber: #c97705;
+        --red: #b42318;
+        --violet: #5840a8;
+        --code: #1b1b1b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--surface);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 14px clamp(18px, 4vw, 56px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+        color: #ffffff;
+        background: rgba(20, 20, 20, 0.88);
+        backdrop-filter: blur(12px);
+      }
+
+      .brand {
+        font-weight: 800;
+        letter-spacing: 0;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        font-size: 0.92rem;
+      }
+
+      .nav-links a {
+        text-decoration: none;
+        color: rgba(255, 255, 255, 0.82);
+      }
+
+      .hero {
+        position: relative;
+        isolation: isolate;
+        min-height: min(720px, 82vh);
+        display: grid;
+        align-items: center;
+        overflow: hidden;
+        color: #ffffff;
+        background: #141414;
+        padding: clamp(72px, 13vh, 124px) clamp(18px, 4vw, 56px);
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        background: rgba(0, 0, 0, 0.34);
+      }
+
+      .hero-scene {
+        position: absolute;
+        inset: 0;
+        z-index: -2;
+        display: grid;
+        grid-template-columns: minmax(320px, 1.1fr) minmax(280px, 0.9fr);
+        gap: 18px;
+        padding: 86px clamp(18px, 5vw, 80px) 28px;
+        transform: rotate(-1deg) scale(1.04);
+        opacity: 0.86;
+      }
+
+      .terminal,
+      .permit-ledger,
+      .report-strip {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        background: rgba(24, 24, 24, 0.92);
+        box-shadow: 0 28px 70px rgba(0, 0, 0, 0.32);
+      }
+
+      .terminal {
+        align-self: stretch;
+        padding: 18px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: clamp(0.72rem, 1.4vw, 0.9rem);
+        color: #eef2f0;
+      }
+
+      .terminal-bar {
+        display: flex;
+        gap: 7px;
+        margin-bottom: 18px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #e35d4f;
+      }
+
+      .dot:nth-child(2) {
+        background: #d9a441;
+      }
+
+      .dot:nth-child(3) {
+        background: #3aa675;
+      }
+
+      .line {
+        display: grid;
+        grid-template-columns: 88px 1fr;
+        gap: 12px;
+        margin: 10px 0;
+      }
+
+      .line span:first-child {
+        color: #88c9a8;
+      }
+
+      .permit-ledger {
+        align-self: start;
+        padding: 18px;
+      }
+
+      .ledger-title,
+      .strip-title {
+        margin: 0 0 14px;
+        color: #f5f7f8;
+        font-weight: 750;
+      }
+
+      .ledger-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 0;
+        border-top: 1px solid rgba(255, 255, 255, 0.13);
+        color: rgba(255, 255, 255, 0.78);
+        font-size: 0.9rem;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 4px 9px;
+        border-radius: 999px;
+        color: #ffffff;
+        font-weight: 750;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+      }
+
+      .allow {
+        background: var(--forest);
+      }
+
+      .review {
+        background: var(--amber);
+      }
+
+      .deny {
+        background: var(--red);
+      }
+
+      .report-strip {
+        grid-column: 1 / -1;
+        align-self: end;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(120px, 1fr));
+        gap: 1px;
+        overflow: hidden;
+      }
+
+      .metric {
+        padding: 16px;
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .metric strong {
+        display: block;
+        color: #ffffff;
+        font-size: 1.55rem;
+        line-height: 1;
+      }
+
+      .metric span {
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 0.84rem;
+      }
+
+      .hero-content {
+        position: relative;
+        max-width: 760px;
+      }
+
+      .kicker {
+        margin: 0 0 18px;
+        color: #a8dfc2;
+        font-weight: 800;
+        text-transform: uppercase;
+        font-size: 0.8rem;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 690px;
+        font-size: clamp(3.1rem, 9vw, 6.4rem);
+        line-height: 0.92;
+        letter-spacing: 0;
+      }
+
+      .hero-copy {
+        max-width: 650px;
+        margin: 24px 0 0;
+        color: rgba(255, 255, 255, 0.86);
+        font-size: clamp(1.05rem, 2.1vw, 1.28rem);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 32px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 46px;
+        padding: 0 18px;
+        border-radius: 6px;
+        border: 1px solid transparent;
+        text-decoration: none;
+        font-weight: 800;
+      }
+
+      .primary {
+        background: #ffffff;
+        color: var(--forest-strong);
+      }
+
+      .secondary {
+        border-color: rgba(255, 255, 255, 0.44);
+        color: #ffffff;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .band {
+        padding: clamp(48px, 8vw, 88px) clamp(18px, 4vw, 56px);
+      }
+
+      .band.alt {
+        background: var(--wash);
+      }
+
+      .inner {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+
+      .section-head {
+        max-width: 760px;
+        margin-bottom: 30px;
+      }
+
+      .section-head h2 {
+        margin: 0;
+        font-size: clamp(2rem, 4vw, 3.1rem);
+        line-height: 1.02;
+        letter-spacing: 0;
+      }
+
+      .section-head p {
+        margin: 14px 0 0;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        padding: 22px;
+      }
+
+      .card h3 {
+        margin: 0 0 10px;
+        font-size: 1.16rem;
+      }
+
+      .card p,
+      .card li {
+        color: var(--muted);
+      }
+
+      .card ul {
+        margin: 16px 0 0;
+        padding-left: 18px;
+      }
+
+      .price {
+        margin: 18px 0 6px;
+        font-size: 2rem;
+        line-height: 1;
+        font-weight: 850;
+      }
+
+      .price small {
+        color: var(--muted);
+        font-size: 0.95rem;
+        font-weight: 650;
+      }
+
+      .stripe {
+        width: 100%;
+        margin-top: 20px;
+        background: var(--forest);
+        color: #ffffff;
+      }
+
+      .code-block {
+        overflow-x: auto;
+        padding: 22px;
+        border-radius: 8px;
+        background: var(--code);
+        color: #f7f7f2;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.88rem;
+      }
+
+      .timeline {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--line);
+      }
+
+      .step {
+        padding: 20px;
+        background: var(--surface);
+      }
+
+      .step strong {
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .step span {
+        color: var(--muted);
+      }
+
+      footer {
+        padding: 26px clamp(18px, 4vw, 56px);
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      @media (max-width: 860px) {
+        .nav {
+          position: static;
+        }
+
+        .nav-links {
+          display: none;
+        }
+
+        .hero {
+          min-height: auto;
+          padding-top: 82px;
+          padding-bottom: 72px;
+        }
+
+        .hero-scene {
+          grid-template-columns: 1fr;
+          padding: 28px 18px;
+          transform: none;
+        }
+
+        .permit-ledger,
+        .report-strip {
+          display: none;
+        }
+
+        .terminal {
+          opacity: 0.66;
+        }
+
+        .grid,
+        .timeline {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav" aria-label="Primary">
+      <div class="brand">IngressShield</div>
+      <div class="nav-links">
+        <a href="#gate">Gate</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#trial">Trial</a>
+        <a href="FIVE_MINUTE_DEMO.md">Demo</a>
+        <a href="PALSY_VS_SCA.md">Comparison</a>
+        <a href="https://github.com/njlane314/palsy">GitHub</a>
+      </div>
+    </nav>
+
+    <main>
+      <section class="hero">
+        <div class="hero-scene" aria-hidden="true">
+          <div class="terminal">
+            <div class="terminal-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+            <div class="line"><span>$ palsy</span><span>gate requirements.txt --mode enforce</span></div>
+            <div class="line"><span>lockfile</span><span>requirements.txt sha256:8f5c...ad19</span></div>
+            <div class="line"><span>policy</span><span>ci-balanced, quarantine 72h, native review</span></div>
+            <div class="line"><span>decision</span><span>ALLOW, 28 dependencies admitted</span></div>
+            <div class="line"><span>permit</span><span>.palsy/permits/requirements.txt.permit.json</span></div>
+            <div class="line"><span>report</span><span>.palsy/dependency-passport.html</span></div>
+          </div>
+
+          <div class="permit-ledger">
+            <p class="ledger-title">Build admission</p>
+            <div class="ledger-row"><span>idna 3.10</span><span class="pill allow">Allow</span></div>
+            <div class="ledger-row"><span>demo-runner 0.4.0</span><span class="pill review">Review</span></div>
+            <div class="ledger-row"><span>shadow-hook 1.2.1</span><span class="pill deny">Deny</span></div>
+          </div>
+
+          <div class="report-strip">
+            <div class="metric"><strong>28</strong><span>dependencies checked</span></div>
+            <div class="metric"><strong>1</strong><span>signed permit</span></div>
+            <div class="metric"><strong>0</strong><span>unexplained changes</span></div>
+            <div class="metric"><strong>CI</strong><span>enforced before build</span></div>
+          </div>
+        </div>
+
+        <div class="hero-content">
+          <p class="kicker">Package-ingress firewall</p>
+          <h1>Block unapproved PyPI/npm packages before they enter CI.</h1>
+          <p class="hero-copy">
+            IngressShield is powered by the open-source Palsy engine. It turns dependency
+            installation into an admission-control process: quarantine, scan, approve,
+            mirror, and sign.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="#pricing">Start a 14-day trial</a>
+            <a class="button secondary" href="#gate">Install the GitHub Action</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="gate" class="band">
+        <div class="inner">
+          <div class="section-head">
+            <h2>Put admission control in the build path.</h2>
+            <p>
+              The open-source action runs inside the customer's GitHub Actions workflow. The
+              commercial IngressShield bundle adds policy updates, packaged governance, and
+              support.
+            </p>
+          </div>
+          <pre class="code-block"><code>name: Palsy dependency gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  dependency-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: njlane314/palsy@main
+        with:
+          mode: enforce
+          environment: ci
+          policy: .palsy/policy.yaml
+          licence: .palsy/licence.json
+          lockfiles: |
+            requirements.txt
+            package-lock.json</code></pre>
+        </div>
+      </section>
+
+      <section id="pricing" class="band alt">
+        <div class="inner">
+          <div class="section-head">
+            <h2>Sell subscriptions with Stripe Payment Links.</h2>
+            <p>
+              Replace the checkout URLs below with live Stripe Payment Links after creating the
+              monthly and annual subscription products in Stripe.
+            </p>
+          </div>
+          <div class="grid">
+            <article class="card">
+              <h3>Community</h3>
+              <p>Open source CLI for local scans, lockfile admission, and reports.</p>
+              <div class="price">Free</div>
+              <ul>
+                <li>Local dependency gate</li>
+                <li>Signed build permits</li>
+                <li>Community documentation</li>
+              </ul>
+            </article>
+
+            <article class="card">
+              <h3>IngressShield Team</h3>
+              <p>CI enforcement bundle for teams that need a repeatable policy gate.</p>
+              <div class="price">GBP 199 <small>/ month</small></div>
+              <ul>
+                <li>Private policy/update bundle</li>
+                <li>Policy templates and explained defaults</li>
+                <li>Commercial Docker images and release support</li>
+              </ul>
+              <a class="button stripe" href="https://buy.stripe.com/replace_ingressshield_team_monthly">Subscribe with Stripe</a>
+            </article>
+
+            <article class="card">
+              <h3>IngressShield Business</h3>
+              <p>Self-hosted API and mirror path for organisations with central governance.</p>
+              <div class="price">GBP 999 <small>/ month</small></div>
+              <ul>
+                <li>Self-hosted API server</li>
+                <li>Review queue, revocations, and audit exports</li>
+                <li>Postgres-backed multi-project state</li>
+              </ul>
+              <a class="button stripe" href="https://buy.stripe.com/replace_ingressshield_business_monthly">Subscribe with Stripe</a>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="trial" class="band">
+        <div class="inner">
+          <div class="section-head">
+            <h2>Offer a 14-day licence-key trial.</h2>
+            <p>
+              The trial key can be bundled privately with paid policy updates while the public repo
+              remains useful for evaluation and open-source adoption.
+            </p>
+          </div>
+          <div class="timeline">
+            <div class="step"><strong>1. Create</strong><span>Generate a local trial licence for the buyer.</span></div>
+            <div class="step"><strong>2. Bundle</strong><span>Send the licence with a private policy/update bundle.</span></div>
+            <div class="step"><strong>3. Enforce</strong><span>Run the gate in CI and require the signed permit.</span></div>
+            <div class="step"><strong>4. Convert</strong><span>Move the customer to a Stripe subscription.</span></div>
+          </div>
+          <pre class="code-block"><code>palsy licence trial --email buyer@example.com --out .palsy/licence.json
+palsy licence check --licence .palsy/licence.json
+palsy gate requirements.txt --mode enforce --licence .palsy/licence.json</code></pre>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      IngressShield is the commercial brand. Palsy remains the open-source engine and CLI.
+      Paid subscriptions package updates, support, governance, and deployment convenience.
+    </footer>
+  </body>
+</html>

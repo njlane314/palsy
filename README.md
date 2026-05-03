@@ -1,8 +1,23 @@
 # Palsy
 
-A production-shaped software supply-chain firewall for Python, npm, OCI images, and generic URL artefacts. It resolves package or image references to exact artefacts, downloads them into quarantine, verifies available digests, statically scans them, evaluates policy, promotes allowed artefacts into internal mirrors where supported, and emits signed Ed25519 permits.
+Block unapproved PyPI/npm packages before they enter CI.
+
+Palsy is the open-source engine behind the **IngressShield** commercial brand: a
+self-hosted package-ingress firewall for software supply chains. It resolves package or
+image references to exact artefacts, downloads them into quarantine, verifies available
+digests, statically scans them, evaluates policy, promotes allowed artefacts into internal
+mirrors where supported, and emits signed Ed25519 permits.
 
 The PyPI path remains fully supported, including the compatibility endpoint and Simple API mirror. Palsy now also has provider adapters for npm tarballs, OCI image metadata bundles, and generic HTTP(S) downloads with caller-supplied digests.
+
+Commercial positioning and deployment references:
+
+- [Commercial brand](docs/BRAND.md)
+- [Palsy vs SCA scanners](docs/PALSY_VS_SCA.md)
+- [Five-minute malicious package demo](docs/FIVE_MINUTE_DEMO.md)
+- [Deployment guide](docs/DEPLOYMENT.md)
+- [Release process](docs/RELEASE.md)
+- [Licence](LICENSE)
 
 ## What it enforces
 
@@ -176,6 +191,33 @@ jobs:
 
 See [Palsy Gate](docs/PALSY_GATE.md) for the self-serve product path.
 
+## Sell and Trial Palsy
+
+The public product surface is a GitHub Action plus a landing page:
+
+- [docs/index.html](docs/index.html) is the GitHub Pages landing page for IngressShield
+  with the claim `Block unapproved PyPI/npm packages before they enter CI.`;
+- [action.yml](action.yml) is the composite GitHub Action customers can run in CI;
+- [docs/MONETISATION.md](docs/MONETISATION.md) covers Stripe Payment Link placeholders,
+  subscription packaging, and GitHub Marketplace timing;
+- [docs/PALSY_VS_SCA.md](docs/PALSY_VS_SCA.md) explains why the wedge is admission
+  control plus signed permits, not CVE alerting;
+- [docs/PUBLIC_RELEASE_CHECKLIST.md](docs/PUBLIC_RELEASE_CHECKLIST.md) covers the manual
+  checks before making the repository public.
+
+Create a 14-day local trial licence for a buyer:
+
+```bash
+palsy licence trial --email buyer@example.com --out .palsy/licence.json
+palsy licence check --licence .palsy/licence.json
+palsy gate requirements.txt --mode enforce --licence .palsy/licence.json
+```
+
+The licence file is intended to travel with a private policy/update bundle during early
+commercial trials. When supplied, `palsy gate --licence` checks that the licence is active
+before admitting the lockfile. Stripe Payment Links should be created in Stripe and then
+dropped into the landing page pricing buttons.
+
 Admission runs also produce an interface bundle:
 
 ```text
@@ -332,12 +374,58 @@ Create and scan a local suspicious wheel:
 python examples/suspicious_wheel_demo.py
 ```
 
+Run the 5-minute package-ingress demo:
+
+```bash
+python examples/five_minute_demo.py
+```
+
+The demo builds a wheel with an executable `.pth` startup hook and import-time credential
+access, copies the exact artefact into quarantine, scans it, applies policy, writes a
+review record, and denies it without mirror promotion or a signed permit.
+
 Assess a real package through the running API:
 
 ```bash
 PALSY_API_TOKEN=dev-token python examples/assess_real_package.py
 PALSY_API_TOKEN=dev-token python examples/assess_universal.py
 PALSY_API_TOKEN=dev-token python examples/assess_lockfile.py
+```
+
+Open the local TUI for a lockfile admission:
+
+```bash
+printf 'idna==3.10\n' > requirements.txt
+palsy gate requirements.txt \
+  --project tui-demo \
+  --environment ci \
+  --mode observe \
+  --report-dir .palsy
+palsy console .palsy/admission.json
+```
+
+The console opens on the dependency inventory and lets you move through results with
+`d`/`u`, inspect explanations with `e`, open the artefact autopsy with `a`, and quit with
+`q`.
+
+Example opening screen:
+
+```text
+Palsy Console  policy=pypi-default env=ci
+--------------------------------------------------------------------------------------------
+Admission: ALLOW     lockfile=requirements.txt  project=tui-demo
+Counts: 1 allow  0 review  0 deny
+Diff: +1 added  -0 removed  ~0 changed  signals=3
+--------------------------------------------------------------------------------------------
+Dependency Diff / Inventory
+> ALLOW              pypi:idna@3.10                                 info
+--------------------------------------------------------------------------------------------
+Explain This Decision: pypi:idna@3.10
+  - all configured checks passed
+Artefact Autopsy: signals=contains_archive, contains_wheel, record_validated digest=946d195a...
+--------------------------------------------------------------------------------------------
+
+[d]own [u]p [e]xplain [a]utopsy [q]uit >
 ```
 
 For CI integration, see `examples/github-actions-palsy.yml`. The committed `.github/workflows/ci.yml` runs tests and builds the package on every push and pull request.

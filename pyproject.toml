@@ -1,7 +1,7 @@
 [project]
 name = "palsy"
 version = "0.3.0"
-description = "Ecosystem-neutral software supply-chain firewall with artefact scanning, policy enforcement, signed permits, and internal mirroring."
+description = "Self-hosted package-ingress firewall with artefact quarantine, policy enforcement, signed permits, and internal mirroring."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

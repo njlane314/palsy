@@ -14,6 +14,7 @@ from .admission_report import load_admission_document
 from .admission_output import format_admission_summary
 from .gate import gate_command, init_command, verify_permit_command
 from .interface_outputs import emit_report_bundle, write_rendered_outputs
+from .licensing import create_trial_licence, licence_status, load_licence, write_licence
 from .policy_composer import (
     compose_policy_interactive,
     policy_explanation,
@@ -77,6 +78,7 @@ def main() -> None:
     gate.add_argument("--sandbox", action="store_true")
     gate.add_argument("--force-rescan", action="store_true")
     gate.add_argument("--json", action="store_true", dest="json_output")
+    gate.add_argument("--licence", type=Path, default=None, help="Optional Palsy licence file")
     gate.add_argument("--out", type=Path, default=None, help="Write canonical admission JSON")
     _add_report_args(gate, include_out=False)
     gate.add_argument(
@@ -129,6 +131,17 @@ def main() -> None:
     compose.add_argument("--force", action="store_true")
     compose.add_argument("--non-interactive", action="store_true")
 
+    licence = sub.add_parser("licence", help="Licence and trial tools")
+    licence_sub = licence.add_subparsers(dest="licence_command")
+    licence_sub.required = True
+    trial = licence_sub.add_parser("trial", help="Create a 14-day local trial licence")
+    trial.add_argument("--email", required=True, help="Customer email for the trial licence")
+    trial.add_argument("--out", type=Path, default=Path(".palsy/licence.json"))
+    trial.add_argument("--days", type=int, default=14)
+    trial.add_argument("--force", action="store_true", help="Overwrite an existing licence file")
+    check = licence_sub.add_parser("check", help="Check a Palsy licence file")
+    check.add_argument("--licence", type=Path, default=Path(".palsy/licence.json"))
+
     args = parser.parse_args()
     if args.command in {None, "serve"}:
         settings = get_settings()
@@ -153,6 +166,10 @@ def main() -> None:
         raise SystemExit(run_console(args.admission))
     elif args.command == "policy" and args.policy_command == "compose":
         raise SystemExit(policy_compose_command(args))
+    elif args.command == "licence" and args.licence_command == "trial":
+        raise SystemExit(licence_trial_command(args))
+    elif args.command == "licence" and args.licence_command == "check":
+        raise SystemExit(licence_check_command(args))
 
 
 def _add_report_args(parser: argparse.ArgumentParser, *, include_out: bool = True) -> None:
@@ -246,6 +263,45 @@ def policy_compose_command(args: argparse.Namespace) -> int:
     print(f"Explanation written: {args.out.with_suffix('.explained.md')}")
     print(policy_explanation(policy))
     return 0
+
+
+def licence_trial_command(args: argparse.Namespace) -> int:
+    try:
+        licence = create_trial_licence(args.email, days=args.days)
+        write_licence(args.out, licence, force=args.force)
+    except (ValueError, FileExistsError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"Trial licence written: {args.out}")
+    print(f"Email: {licence['email']}")
+    print(f"Plan: {licence['plan']}")
+    print(f"Expires: {licence['expires_at']}")
+    print("Next action: add this licence to the customer's private policy/update bundle")
+    return 0
+
+
+def licence_check_command(args: argparse.Namespace) -> int:
+    try:
+        licence = load_licence(args.licence)
+    except OSError as exc:
+        print(f"licence could not be read: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"licence is not valid JSON: {exc}", file=sys.stderr)
+        return 2
+
+    status = licence_status(licence)
+    print(f"Licence status: {status['state'].upper()}")
+    if status.get("plan"):
+        print(f"Plan: {status['plan']}")
+    if status.get("email"):
+        print(f"Email: {status['email']}")
+    if status.get("expires_at"):
+        print(f"Expires: {status['expires_at']}")
+    print(f"Days remaining: {status['days_remaining']}")
+    if status.get("reason"):
+        print(f"Reason: {status['reason']}")
+    return 0 if status["state"] == "active" else 1
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+from . import __version__
 from .models import (
     AssessmentRequest,
     AssessmentResponse,
@@ -59,8 +60,8 @@ def require_api_token(
 
 app = FastAPI(
     title="Palsy",
-    version="0.3.0",
-    description="Ecosystem-neutral software supply-chain firewall with adapter-based resolution, lockfile admission, quarantine scanning, signed permits, and internal mirrors where supported.",
+    version=__version__,
+    description="Self-hosted package-ingress firewall for PyPI/npm dependency admission, quarantine scanning, signed permits, and internal mirrors where supported.",
 )
 
 

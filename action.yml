@@ -1,6 +1,10 @@
 name: Palsy Gate
 description: Self-hosted dependency admission gate for Python, npm, OCI, and generic artefacts.
 
+branding:
+  icon: shield
+  color: green
+
 inputs:
   lockfiles:
     description: Newline-separated lockfiles to assess. Defaults to requirements*.txt and package-lock.json auto-discovery.
@@ -30,6 +34,14 @@ inputs:
     description: Directory or file path for signed build permits.
     required: false
     default: .palsy/permits
+  report-dir:
+    description: Directory for admission.json, dependency-passport.html, and summary.md.
+    required: false
+    default: .palsy
+  licence:
+    description: Optional Palsy licence file to validate before dependency admission.
+    required: false
+    default: ""
   json-out:
     description: Optional path for the raw admission response JSON.
     required: false
@@ -64,6 +76,11 @@ runs:
           json_args+=(--out "${{ inputs.json-out }}")
         fi
 
+        licence_args=()
+        if [ -n "${{ inputs.licence }}" ]; then
+          licence_args+=(--licence "${{ inputs.licence }}")
+        fi
+
         palsy gate "${args[@]}" \
           --mode "${{ inputs.mode }}" \
           --environment "${{ inputs.environment }}" \
@@ -71,4 +88,6 @@ runs:
           --policy "${{ inputs.policy }}" \
           --state-dir "${{ inputs.state-dir }}" \
           --permit-out "${{ inputs.permit-out }}" \
+          --report-dir "${{ inputs.report-dir }}" \
+          "${licence_args[@]}" \
           "${json_args[@]}"

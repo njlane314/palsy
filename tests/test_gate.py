@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from palsy import gate
+from palsy.licensing import create_trial_licence, write_licence
 from palsy.models import BuildPermit, BuildPermitSubject, Decision, Environment
 from palsy.permits import PermitSigner
 from palsy.utils import sha256_bytes, utcnow
@@ -103,3 +104,27 @@ def test_verify_permit_command_rejects_tampered_build_permit(tmp_path, capsys):
 
     assert code == 1
     assert "signature is invalid" in capsys.readouterr().err
+
+
+def test_check_gate_licence_accepts_active_trial(tmp_path, capsys):
+    licence_path = tmp_path / "licence.json"
+    write_licence(licence_path, create_trial_licence("buyer@example.com"))
+
+    code = gate._check_gate_licence(licence_path)
+
+    assert code == 0
+    assert "Palsy licence active:" in capsys.readouterr().out
+
+
+def test_check_gate_licence_rejects_expired_trial(tmp_path, capsys):
+    licence_path = tmp_path / "licence.json"
+    licence = create_trial_licence(
+        "buyer@example.com",
+        now=datetime(2000, 1, 1, tzinfo=timezone.utc),
+    )
+    write_licence(licence_path, licence)
+
+    code = gate._check_gate_licence(licence_path)
+
+    assert code == 1
+    assert "licence check failed: expired" in capsys.readouterr().err

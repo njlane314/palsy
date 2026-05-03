@@ -10,6 +10,7 @@ from typing import Any
 
 from .admission_output import format_admission_summary
 from .interface_outputs import emit_report_bundle, safe_lockfile_stem
+from .licensing import licence_status, load_licence
 from .models import BuildPermit, Decision, Environment, LockfileAssessmentRequest
 from .permits import verify_build_permit_document
 from .service import FirewallService
@@ -143,6 +144,14 @@ def gate_command(args: argparse.Namespace) -> int:
             print(f"lockfile not found: {lockfile}", file=sys.stderr)
             return 2
 
+    if getattr(args, "licence", None):
+        licence_code = _check_gate_licence(
+            args.licence,
+            json_output=getattr(args, "json_output", False),
+        )
+        if licence_code:
+            return licence_code
+
     settings = _settings_from_args(args)
     service = FirewallService(settings)
 
@@ -239,6 +248,36 @@ def verify_permit_command(args: argparse.Namespace) -> int:
     print(f"Lockfile digest: {permit.subject.lockfile_digest}")
     print(f"Environment: {permit.environment.value}")
     print(f"Expires: {permit.expires_at.isoformat()}")
+    return 0
+
+
+def _check_gate_licence(path: Path, *, json_output: bool = False) -> int:
+    stream = sys.stderr if json_output else sys.stdout
+    if not path.is_file():
+        print(f"licence not found: {path}", file=sys.stderr)
+        return 2
+    try:
+        licence = load_licence(path)
+    except OSError as exc:
+        print(f"licence could not be read: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"licence is not valid JSON: {exc}", file=sys.stderr)
+        return 2
+
+    status = licence_status(licence)
+    if status["state"] != "active":
+        print(
+            f"licence check failed: {status['state']} ({status.get('reason', 'unknown reason')})",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"Palsy licence active: {status.get('plan') or 'unknown plan'}, "
+        f"{status['days_remaining']} days remaining",
+        file=stream,
+    )
     return 0
 
 

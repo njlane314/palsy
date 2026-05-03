@@ -12,4 +12,5 @@ keys/
 logs/
 dist/
 build/
+release-assets/
 examples/artefacts/

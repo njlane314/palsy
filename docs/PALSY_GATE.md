@@ -16,6 +16,8 @@ No permit, no build.
 - `palsy gate` performs local lockfile admission without requiring the HTTP API.
 - `palsy verify-permit` verifies a signed build permit against a lockfile.
 - `action.yml` lets users run Palsy directly as a GitHub composite action.
+- `palsy licence trial` creates a 14-day trial licence for private policy/update bundles.
+- `palsy gate --licence` validates that licence before admitting the lockfile.
 
 The HTTP API and internal mirror remain available for teams that want a fuller self-hosted server later. The first adoption path is now a single CI job.
 
@@ -143,7 +145,7 @@ Community
   JSON/SARIF reports
   community docs
 
-Team
+IngressShield Team
   CI enforcement bundle
   signed build-permit workflow
   policy templates
@@ -151,7 +153,7 @@ Team
   commercial Docker images
   update stream
 
-Business
+IngressShield Business
   self-hosted API server
   PyPI/npm mirror surfaces
   review queue
@@ -164,13 +166,27 @@ Business
 Suggested paid SKUs:
 
 ```text
-Palsy Team
+IngressShield Team
   GBP 199/month or GBP 1,999/year
   CI enforcement, signed build permits, policy templates, audit bundles
 
-Palsy Business
+IngressShield Business
   GBP 999/month or GBP 9,999/year
   self-hosted API, mirrors, review queue, Postgres, multi-project state
 ```
 
 The important boundary is operational: no hosted service is required, and the customer does not need a deployment engagement to get the first value.
+
+## Commercial Launch Assets
+
+- Landing page: [docs/index.html](index.html)
+- Monetisation plan: [docs/MONETISATION.md](MONETISATION.md)
+- Public release checklist: [docs/PUBLIC_RELEASE_CHECKLIST.md](PUBLIC_RELEASE_CHECKLIST.md)
+
+Generate a buyer trial licence:
+
+```bash
+palsy licence trial --email buyer@example.com --out .palsy/licence.json
+palsy licence check --licence .palsy/licence.json
+palsy gate requirements.txt --mode enforce --licence .palsy/licence.json
+```
